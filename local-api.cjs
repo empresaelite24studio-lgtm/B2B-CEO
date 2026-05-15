@@ -31,9 +31,31 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
+// Strip base64 data URLs so project data fits in Notion's 200KB rich_text limit
+function stripBase64Images(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    if (obj.startsWith('data:image/')) return '';
+    return obj;
+  }
+  if (Array.isArray(obj)) return obj.map(stripBase64Images);
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const key of Object.keys(obj)) {
+      result[key] = stripBase64Images(obj[key]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 app.post('/api/projects', async (req, res) => {
   const { id, name, date, data } = req.body;
-  const jsonString = JSON.stringify(data);
+  const safeId = String(id || Date.now());
+  const safeName = name || 'Sin nombre';
+  const safeDate = date || '';
+  const cleanData = stripBase64Images(data || {});
+  const jsonString = JSON.stringify(cleanData);
   const chunks = [];
   for (let i = 0; i < jsonString.length; i += 2000) {
     chunks.push({ type: 'text', text: { content: jsonString.substring(i, i + 2000) } });
@@ -42,15 +64,15 @@ app.post('/api/projects', async (req, res) => {
   try {
     const existing = await notion.databases.query({
       database_id: databaseId,
-      filter: { property: 'ProjectID', rich_text: { equals: id } }
+      filter: { property: 'ProjectID', rich_text: { equals: safeId } }
     });
 
     if (existing.results.length > 0) {
       await notion.pages.update({
         page_id: existing.results[0].id,
         properties: {
-          Name: { title: [{ text: { content: name } }] },
-          Date: { rich_text: [{ text: { content: date } }] },
+          Name: { title: [{ text: { content: safeName } }] },
+          Date: { rich_text: [{ text: { content: safeDate } }] },
           JSONData: { rich_text: chunks }
         }
       });
@@ -58,9 +80,9 @@ app.post('/api/projects', async (req, res) => {
       await notion.pages.create({
         parent: { database_id: databaseId },
         properties: {
-          Name: { title: [{ text: { content: name } }] },
-          ProjectID: { rich_text: [{ text: { content: id } }] },
-          Date: { rich_text: [{ text: { content: date } }] },
+          Name: { title: [{ text: { content: safeName } }] },
+          ProjectID: { rich_text: [{ text: { content: safeId } }] },
+          Date: { rich_text: [{ text: { content: safeDate } }] },
           JSONData: { rich_text: chunks }
         }
       });
@@ -86,6 +108,52 @@ app.delete('/api/projects', async (req, res) => {
     }
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+const nodemailer = require('nodemailer');
+
+app.post('/api/send-email', async (req, res) => {
+  const { name, role, email, whatsapp, brandName, studioName } = req.body;
+
+  const transporter = nodemailer.createTransport({
+    host: (process.env.SMTP_HOST || '').trim(),
+    port: parseInt((process.env.SMTP_PORT || '587').trim()),
+    secure: (process.env.SMTP_PORT || '').trim() === '465',
+    auth: {
+      user: (process.env.SMTP_USER || '').trim(),
+      pass: (process.env.SMTP_PASS || '').trim(),
+    },
+  });
+
+  try {
+    const mailOptions = {
+      from: `"B2B CEO - ${studioName}" <${process.env.SMTP_USER}>`,
+      to: email,
+      bcc: process.env.SMTP_USER,
+      subject: `Nueva solicitud de contacto - ${brandName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9f9f9; padding: 20px; border-radius: 10px;">
+          <h2 style="color: #8A05BE;">Nueva Solicitud de Contacto</h2>
+          <p>Se ha recibido una nueva respuesta del formulario para la propuesta de <strong>${brandName}</strong>.</p>
+          <div style="background-color: white; padding: 15px; border-radius: 8px; border-left: 4px solid #8A05BE;">
+            <p><strong>Nombre:</strong> ${name}</p>
+            <p><strong>Cargo:</strong> ${role}</p>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>WhatsApp:</strong> ${whatsapp}</p>
+          </div>
+          <p style="font-size: 12px; color: #666; margin-top: 20px;">
+            Este es un correo automático enviado desde la plataforma B2B CEO de ${studioName}.
+          </p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error enviando correo:', error);
+    res.status(500).json({ error: 'Error enviando el correo', details: error.message });
   }
 });
 

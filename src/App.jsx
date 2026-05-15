@@ -2,12 +2,26 @@ import React, { useState, useEffect } from 'react';
 import { 
   Plus, Copy, Trash2, Edit2, ChevronLeft, ChevronRight, 
   UploadCloud, Maximize, Minimize, Download, CheckCircle,
-  Hexagon, Sparkles, Map, Users, Sun, Leaf, Share2, Save
+  Hexagon, Sparkles, Map, Users, Sun, Leaf, Share2, Save,
+  RefreshCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const DB_NAME = 'Elite24_B2B_Builder';
 const STORE_NAME = 'projects';
+
+const slugify = (text) => {
+  return text
+    .toString()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+};
 
 const openDB = () => {
   return new Promise((resolve, reject) => {
@@ -43,36 +57,86 @@ const loadFromDB = async (key) => {
 };
 
 const StorageManager = {
-  save: async (projects) => {
-    // Save current active project (the last one modified) or just the whole list?
-    // The current UI handles a list of projects. Let's save the whole list or individual projects?
-    // Individual projects is better for Notion.
+  save: async (projects, activeId) => {
     try {
-      // For now, we save the active project or the whole list?
-      // Let's iterate and save all to keep it simple with Notion for now, 
-      // though ideally we'd save only the one being edited.
-      for (const proj of projects) {
-        await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(proj)
-        });
-      }
+      // Prioritize active project if provided
+      const sortedProjects = [...projects].sort((a, b) => {
+        if (a.id === activeId) return -1;
+        if (b.id === activeId) return 1;
+        return 0;
+      });
+
+      // Save each project individually to Notion in parallel
+      const savePromises = sortedProjects.map(async (proj) => {
+        try {
+          const res = await fetch('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: proj.id,
+              name: proj.name,
+              date: proj.date,
+              data: proj.data
+            })
+          });
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP error ${res.status}`);
+          }
+          return true;
+        } catch (e) {
+          console.warn(`Error saving project ${proj.id} to Notion:`, e);
+          return false;
+        }
+      });
+      
+      await Promise.all(savePromises);
+      
+      // Always save full data (including images) to localStorage as backup
       localStorage.setItem('b2b-projects-v2', JSON.stringify(projects));
     } catch (e) {
-      console.error("Error saving to Notion:", e);
+      console.error("Error saving projects:", e);
       localStorage.setItem('b2b-projects-v2', JSON.stringify(projects));
+      throw e;
     }
   },
   load: async () => {
     try {
-      const res = await fetch('/api/projects');
+      // Use cache: 'no-store' to avoid stale results from Notion
+      const res = await fetch('/api/projects', { cache: 'no-store' });
       if (res.ok) {
-        const data = await res.json();
-        if (data && data.length > 0) return data;
+        const notionData = await res.json();
+        if (notionData && notionData.length > 0) {
+          const local = localStorage.getItem('b2b-projects-v2');
+          const localProjects = local ? JSON.parse(local) : [];
+
+          const merged = notionData.map(np => {
+            const localMatch = localProjects.find(lp => 
+              String(lp.id) === String(np.id) || (lp.name && np.name && slugify(lp.name) === slugify(np.name))
+            );
+            
+            if (localMatch && np.data) {
+              return {
+                id: np.id,
+                name: np.name || localMatch.name,
+                date: np.date || localMatch.date,
+                data: mergeProjectData(np.data, localMatch.data)
+              };
+            }
+            
+            return {
+              id: np.id,
+              name: np.name,
+              date: np.date,
+              data: np.data || {}
+            };
+          });
+          
+          return merged;
+        }
+        return []; // Return empty array if Notion is empty but response was OK
       }
-      const local = localStorage.getItem('b2b-projects-v2');
-      return local ? JSON.parse(local) : null;
+      throw new Error(`Load failed with status ${res.status}`);
     } catch (e) {
       console.error("Error loading from Notion:", e);
       const local = localStorage.getItem('b2b-projects-v2');
@@ -91,6 +155,30 @@ const StorageManager = {
     }
   }
 };
+
+// Recursively merge Notion data (no images) with local data (has images)
+function mergeProjectData(notionData, localData) {
+  if (!localData) return notionData;
+  if (!notionData) return localData;
+  
+  const result = { ...notionData };
+  for (const key of Object.keys(result)) {
+    if (typeof result[key] === 'string' && result[key] === '' && localData[key] && typeof localData[key] === 'string' && localData[key].startsWith('data:image/')) {
+      // Recover base64 image from local
+      result[key] = localData[key];
+    } else if (Array.isArray(result[key]) && Array.isArray(localData[key])) {
+      result[key] = result[key].map((item, idx) => {
+        if (localData[key][idx] && typeof item === 'object') {
+          return mergeProjectData(item, localData[key][idx]);
+        }
+        return item;
+      });
+    } else if (typeof result[key] === 'object' && result[key] !== null && typeof localData[key] === 'object' && localData[key] !== null) {
+      result[key] = mergeProjectData(result[key], localData[key]);
+    }
+  }
+  return result;
+}
 
 const MAX_SLIDES = 8;
 
@@ -153,14 +241,15 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_SIZE = 1200;
+        const MAX_SIZE = 800; // Optimizado para no exceder límites de Notion (200KB total)
         if (width > height && width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
         else if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        const outputType = file.type === 'image/png' ? 'image/png' : 'image/webp';
-        const quality = file.type === 'image/png' ? undefined : 0.8;
+        // WebP 0.5 es el punto óptimo entre legibilidad y tamaño para Notion
+        const outputType = 'image/webp';
+        const quality = 0.5;
         onChange(canvas.toDataURL(outputType, quality));
       };
       img.src = e.target.result;
@@ -469,6 +558,14 @@ const VisionSlide = ({ data }) => {
           <p className="text-white/50 max-w-2xl mx-auto text-[11px] tracking-widest leading-relaxed uppercase">
             {vision.description}
           </p>
+          <motion.p 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: [0.4, 0.8, 0.4] }} 
+            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+            className="mt-6 text-[9px] text-[var(--brand-primary)] tracking-[0.3em] font-bold uppercase"
+          >
+            Haz clic en cada pilar para expandir la visión
+          </motion.p>
         </div>
 
         <div className="flex h-[45vh] min-h-[350px] w-full gap-3 overflow-hidden p-2">
@@ -517,9 +614,25 @@ const VisionSlide = ({ data }) => {
   );
 };
 
-const RendersSlide = ({ data }) => {
+const RendersSlide = ({ data, activeIndex, onIndexChange }) => {
   const { renders } = data;
-  const [activeIndex, setActiveIndex] = useState(0);
+
+  // Guard: If there are no renders, show a placeholder or empty state
+  if (!renders || renders.length === 0) {
+    return (
+      <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#020105]">
+        <div className="text-white/20 flex flex-col items-center">
+          <UploadCloud size={64} className="mb-4 opacity-50" />
+          <p className="text-xs uppercase tracking-widest font-bold">No hay renders disponibles</p>
+          <p className="text-[10px] text-white/30 mt-2 uppercase tracking-widest">Añade renders desde el panel lateral</p>
+        </div>
+        <footer className="absolute bottom-8 w-full flex justify-center text-[9px] tracking-[0.4em] uppercase text-white/40 font-bold z-10 pointer-events-none">CAPÍTULO &nbsp;&nbsp; 05 / 08</footer>
+      </div>
+    );
+  }
+
+  // Ensure activeIndex is within bounds (safety reset)
+  const safeIndex = activeIndex >= renders.length ? 0 : activeIndex;
 
   return (
     <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#020105]">
@@ -534,11 +647,11 @@ const RendersSlide = ({ data }) => {
 
       <div className="relative z-10 w-full h-[60vh] flex items-center justify-center perspective-[1200px]">
         {renders.map((render, idx) => {
-          const isActive = idx === activeIndex;
-          const isPrev = idx === (activeIndex - 1 + renders.length) % renders.length;
-          const isNext = idx === (activeIndex + 1) % renders.length;
+          const isActive = idx === safeIndex;
+          const isPrev = idx === (safeIndex - 1 + renders.length) % renders.length;
+          const isNext = idx === (safeIndex + 1) % renders.length;
 
-          let translateZ = -400; let translateX = 0; let rotateY = 0; let opacity = 0; zIndex = 0;
+          let translateZ = -400; let translateX = 0; let rotateY = 0; let opacity = 0; let zIndex = 0;
 
           if (isActive) { translateZ = 0; translateX = 0; rotateY = 0; opacity = 1; zIndex = 30; }
           else if (isPrev) { translateZ = -200; translateX = -400; rotateY = 30; opacity = 0.6; zIndex = 20; }
@@ -548,7 +661,7 @@ const RendersSlide = ({ data }) => {
           return (
             <div
               key={render.id}
-              onClick={() => { if (!isActive) setActiveIndex(idx); }}
+              onClick={() => { if (!isActive) onIndexChange(idx); }}
               className={`absolute transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] cursor-pointer ${isActive ? 'shadow-[0_0_50px_var(--brand-primary)]' : ''}`}
               style={{ transform: `translateX(${translateX}px) translateZ(${translateZ}px) rotateY(${rotateY}deg)`, opacity, zIndex, width: '65vw', maxWidth: '900px', aspectRatio: '16/9' }}
             >
@@ -567,17 +680,23 @@ const RendersSlide = ({ data }) => {
 
       <div className="absolute bottom-24 w-full text-center z-20 px-8">
         <AnimatePresence mode="wait">
-          <motion.div key={activeIndex} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.5 }}>
-            <div className="inline-flex items-center gap-4 bg-white/5 backdrop-blur-md px-6 py-3 rounded-full border border-white/10">
-              <span className="text-[var(--brand-primary)] font-bold text-[10px] tracking-widest uppercase bg-[var(--brand-primary)]/10 px-2 py-1 rounded">0{activeIndex + 1}</span>
-              <p className="text-white text-sm md:text-base font-light tracking-wide ceo-text render-subtitle" dangerouslySetInnerHTML={{ __html: renders[activeIndex].subtitle }} />
-            </div>
-          </motion.div>
+          {renders[safeIndex] && (
+            <motion.div key={safeIndex} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.5 }}>
+              <div className="inline-flex items-center gap-4 bg-white/5 backdrop-blur-md px-6 py-3 rounded-full border border-white/10">
+                <span className="text-[var(--brand-primary)] font-bold text-[10px] tracking-widest uppercase bg-[var(--brand-primary)]/10 px-2 py-1 rounded">0{safeIndex + 1}</span>
+                <p className="text-white text-sm md:text-base font-light tracking-wide ceo-text render-subtitle" dangerouslySetInnerHTML={{ __html: renders[safeIndex].subtitle || 'Sin descripción' }} />
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
 
-      <div className="absolute bottom-1/2 left-8 z-30"><button onClick={() => setActiveIndex((activeIndex - 1 + renders.length) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronLeft /></button></div>
-      <div className="absolute bottom-1/2 right-8 z-30"><button onClick={() => setActiveIndex((activeIndex + 1) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronRight /></button></div>
+      {renders.length > 1 && (
+        <>
+          <div className="absolute bottom-1/2 left-8 z-30"><button onClick={() => onIndexChange((safeIndex - 1 + renders.length) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronLeft /></button></div>
+          <div className="absolute bottom-1/2 right-8 z-30"><button onClick={() => onIndexChange((safeIndex + 1) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronRight /></button></div>
+        </>
+      )}
       <footer className="absolute bottom-8 w-full flex justify-center text-[9px] tracking-[0.4em] uppercase text-white/40 font-bold z-10 pointer-events-none">CAPÍTULO &nbsp;&nbsp; 05 / 08</footer>
     </div>
   );
@@ -648,84 +767,139 @@ const PillarsSlide = ({ data }) => {
   );
 };
 
-const CtaSlide = ({ data }) => {
-  const { ctaFinal, brand, studio } = data;
+const CtaSlide = ({ data, onRestart }) => {
   const [step, setStep] = useState('initial');
-  const processedHtml = ctaFinal.htmlText.replace(/{{brandName}}/g, brand.name);
+  const [formData, setFormData] = useState({ name: '', role: '', email: '', whatsapp: '' });
+  
+  // Extraemos datos con seguridad absoluta
+  const brandName = data?.brand?.name || 'la marca';
+  const ctaQuote = data?.ctaFinal?.quote || 'El futuro comienza hoy.';
+  const ctaHtml = data?.ctaFinal?.htmlText || 'Agenda tu sesión ahora.';
+  const ceoName = data?.studio?.ceo || 'nuestro equipo';
+  const studioName = data?.studio?.name || 'Elite 24 Studio';
+  const studioWeb = data?.studio?.web || '#';
+  const primaryColor = data?.brand?.primaryColor || '#8A05BE';
 
-  const handleSubmit = (e) => {
+  const processedHtml = (ctaHtml || '').replace(/{{brandName}}/g, brandName);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setStep('sending');
-    setTimeout(() => { setStep('success'); }, 2500);
+    
+    try {
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...formData,
+          brandName,
+          studioName
+        })
+      });
+
+      if (response.ok) {
+        setStep('success');
+      } else {
+        const err = await response.json();
+        alert('Error: ' + (err.error || 'No se pudo enviar el correo'));
+        setStep('form');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error de conexión al enviar el formulario');
+      setStep('form');
+    }
   };
 
   return (
     <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
       <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
         <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[250px] mix-blend-screen opacity-10"></div>
-        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-30 mix-blend-overlay animate-pulse-glow"></div>
+        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-30 mix-blend-overlay"></div>
       </div>
 
       <main className="relative z-10 w-full max-w-3xl flex flex-col items-center">
         <AnimatePresence mode="wait">
           {step === 'initial' && (
-            <motion.div key="initial" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.5 }} className="text-center">
+            <motion.div key="initial" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, y: -20 }} className="text-center">
               <div className="mb-10 text-[var(--brand-primary)] opacity-60">
-                <motion.div animate={{ rotate: 360, scale: [1, 1.1, 1] }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }}>
-                  <Sparkles size={64} className="mx-auto drop-shadow-[0_0_25px_var(--brand-primary)]" />
+                <motion.div animate={{ rotate: 360, scale: [1, 1.1, 1] }} transition={{ duration: 10, repeat: Infinity, ease: "linear" }}>
+                  <Sparkles size={60} className="mx-auto" />
                 </motion.div>
               </div>
-              <motion.h2 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.2 }} className="text-3xl md:text-5xl font-light tracking-tight text-white mb-8 ceo-text leading-tight">
-                "{ctaFinal.quote}"
+              <motion.h2 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="text-3xl md:text-5xl font-light text-white mb-8 ceo-text leading-tight italic">
+                "{ctaQuote}"
               </motion.h2>
-              <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.4 }} className="text-sm md:text-lg text-white/60 font-light max-w-2xl mx-auto leading-relaxed ceo-text mb-12" dangerouslySetInnerHTML={{ __html: processedHtml }} />
-              <motion.button onClick={() => setStep('form')} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.5, delay: 0.6 }} className="px-12 py-5 rounded-full text-white text-xs font-bold tracking-[0.2em] uppercase transition-all duration-300 hover:scale-105 border border-[var(--brand-primary)] shadow-[0_0_30px_var(--brand-primary)] bg-[var(--brand-primary)]/20 backdrop-blur-md flex items-center gap-3 mx-auto group">
-                QUIERO AGENDAR REUNIÓN <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
-              </motion.button>
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="text-sm md:text-lg text-white/60 font-light max-w-2xl mx-auto leading-relaxed mb-12" dangerouslySetInnerHTML={{ __html: processedHtml }} />
+              
+              <div className="flex flex-col gap-5 items-center">
+                <button 
+                  onClick={() => setStep('form')} 
+                  className="px-12 py-5 rounded-full text-white text-xs font-bold tracking-[0.2em] uppercase transition-all duration-300 hover:scale-105 border border-[var(--brand-primary)] bg-[var(--brand-primary)]/20 backdrop-blur-md flex items-center gap-3 shadow-[0_0_30px_rgba(138,5,190,0.2)]"
+                >
+                  QUIERO AGENDAR REUNIÓN <ChevronRight size={16} />
+                </button>
+                
+                <button 
+                  onClick={onRestart}
+                  className="px-10 py-4 rounded-full border border-white/20 text-white text-[10px] font-bold tracking-[0.2em] uppercase hover:bg-white/10 transition-all flex items-center gap-2"
+                >
+                  <RefreshCcw size={14} /> Volver a vivir la experiencia
+                </button>
+              </div>
             </motion.div>
           )}
 
           {step === 'form' && (
-            <motion.form key="form" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.4 }} onSubmit={handleSubmit} className="w-full bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-10 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+            <motion.form key="form" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} onSubmit={handleSubmit} className="w-full bg-white/5 backdrop-blur-2xl border border-white/10 rounded-3xl p-10 shadow-2xl">
               <div className="text-center mb-8">
-                <h3 className="text-2xl font-bold text-white mb-2">Construyamos el futuro de {brand.name}</h3>
-                <p className="text-xs text-[var(--brand-primary)] uppercase tracking-widest font-bold">Respuesta en menos de 48 horas</p>
+                <h3 className="text-2xl font-bold text-white mb-2">Construyamos el futuro</h3>
+                <p className="text-[10px] text-[var(--brand-primary)] uppercase tracking-widest font-bold">Respuesta en menos de 48 horas</p>
               </div>
-              <div className="grid grid-cols-2 gap-6 mb-6">
-                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Nombre completo</label><input type="text" name="nombre" required className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] focus:bg-white/5 outline-none transition-colors" placeholder="Tu nombre" /></div>
-                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cargo</label><input type="text" name="cargo" required className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] focus:bg-white/5 outline-none transition-colors" placeholder="Ej: Director de Expansión" /></div>
-              </div>
-              <div className="mb-6"><label className="block text-[10px] uppercase tracking-widest text-[var(--brand-primary)] mb-2 font-bold flex items-center gap-1">Correo corporativo (*)</label><input type="email" name="email" required className="w-full bg-black/40 border border-[var(--brand-primary)]/50 rounded-lg px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] focus:bg-white/5 outline-none transition-colors shadow-[0_0_10px_var(--brand-primary)]/20" placeholder={`ejemplo@${brand.name.toLowerCase().replace(/\s/g, '')}.com`} /></div>
-              <div className="mb-8"><label className="block text-[10px] uppercase tracking-widest text-[var(--brand-primary)] mb-2 font-bold flex items-center gap-1">Celular / WhatsApp (*)</label><input type="tel" name="whatsapp" required className="w-full bg-black/40 border border-[var(--brand-primary)]/50 rounded-lg px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] focus:bg-white/5 outline-none transition-colors shadow-[0_0_10px_var(--brand-primary)]/20" placeholder="+57 300 000 0000" /></div>
-              <div className="flex gap-4">
-                <button type="button" onClick={() => setStep('initial')} className="px-6 py-4 rounded-xl border border-white/20 text-white/60 text-xs font-bold tracking-[0.1em] uppercase hover:bg-white/5 transition-colors">Volver</button>
-                <button type="submit" className="flex-1 py-4 rounded-xl bg-[var(--brand-primary)] text-white text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] shadow-[0_0_20px_var(--brand-primary)]">Enviar Solicitud</button>
+              
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="text" placeholder="Nombre" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                  <input type="text" placeholder="Cargo" required value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                </div>
+                <input type="email" placeholder="Email corporativo" required value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                <input type="tel" placeholder="WhatsApp" required value={formData.whatsapp} onChange={e => setFormData({...formData, whatsapp: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                
+                <div className="flex gap-4 pt-4">
+                  <button type="button" onClick={() => setStep('initial')} className="px-6 py-4 rounded-xl border border-white/10 text-white/40 text-xs font-bold uppercase">Volver</button>
+                  <button type="submit" className="flex-1 py-4 rounded-xl bg-[var(--brand-primary)] text-white text-xs font-bold tracking-[0.2em] uppercase shadow-[0_0_20px_rgba(138,5,190,0.4)]">Enviar Solicitud</button>
+                </div>
               </div>
             </motion.form>
           )}
 
           {step === 'sending' && (
             <motion.div key="sending" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-20">
-              <div className="w-16 h-16 border-4 border-white/10 border-t-[var(--brand-primary)] rounded-full animate-spin mx-auto mb-6 shadow-[0_0_20px_var(--brand-primary)]"></div>
-              <p className="text-sm tracking-[0.2em] uppercase text-[var(--brand-primary)] font-bold animate-pulse">Conectando con {studio.ceo}...</p>
+              <div className="w-16 h-16 border-4 border-white/10 border-t-[var(--brand-primary)] rounded-full animate-spin mx-auto mb-6"></div>
+              <p className="text-[10px] tracking-[0.3em] uppercase text-[var(--brand-primary)] font-bold animate-pulse">Conectando con {ceoName}...</p>
             </motion.div>
           )}
 
           {step === 'success' && (
-            <motion.div key="success" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center bg-white/5 backdrop-blur-xl border border-[var(--brand-primary)]/50 rounded-3xl p-12 shadow-[0_0_50px_rgba(138,5,190,0.3)] max-w-xl">
-              <CheckCircle size={64} className="mx-auto text-[var(--brand-primary)] mb-6 drop-shadow-[0_0_15px_var(--brand-primary)]" />
-              <h3 className="text-3xl font-bold text-white mb-4">¡GRACIAS!</h3>
-              <p className="text-white/70 text-sm leading-relaxed mb-8">
-                Nuestro CEO en las proximas 48 horas te contactara para presentarte nuestro estudio mas a fondo, nos alegra que hayas dado el primer paso...
+            <motion.div key="success" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center bg-white/5 backdrop-blur-2xl border border-[var(--brand-primary)]/40 rounded-3xl p-12 max-w-xl">
+              <CheckCircle size={60} className="mx-auto text-[var(--brand-primary)] mb-6" />
+              <h3 className="text-3xl font-bold text-white mb-4 uppercase tracking-tighter">¡GRACIAS!</h3>
+              <p className="text-white/60 text-sm leading-relaxed mb-10">
+                Nos alegra que hayas dado el primer paso. Nos pondremos en contacto contigo muy pronto.
               </p>
-              <a href={studio.web} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-8 py-4 rounded-full border border-[var(--brand-primary)] bg-[var(--brand-primary)]/10 text-white text-xs font-bold tracking-[0.1em] uppercase hover:bg-[var(--brand-primary)] transition-all">
-                Conoce nuestro portafolio acá <ChevronRight size={16} />
-              </a>
+              <div className="flex flex-col gap-4">
+                <a href={studioWeb} target="_blank" rel="noopener noreferrer" className="w-full py-5 rounded-full bg-[var(--brand-primary)] text-white text-xs font-bold tracking-widest uppercase text-center shadow-[0_0_30px_rgba(138,5,190,0.3)]">
+                  Conoce nuestro portafolio acá
+                </a>
+                <button onClick={onRestart} className="w-full py-4 rounded-full border border-white/10 text-white text-[10px] font-bold tracking-widest uppercase flex items-center justify-center gap-2">
+                  <RefreshCcw size={14} /> Volver al inicio
+                </button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
       </main>
-      <footer className="absolute bottom-8 w-full flex justify-center text-[9px] tracking-[0.4em] uppercase text-white/40 font-bold z-10 pointer-events-none">CAPÍTULO &nbsp;&nbsp; 08 / 08</footer>
+      <footer className="absolute bottom-8 w-full flex justify-center text-[9px] tracking-[0.4em] uppercase text-white/40 font-bold z-10">CAPÍTULO &nbsp;&nbsp; 08 / 08</footer>
     </div>
   );
 };
@@ -735,38 +909,151 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [activeAccordion, setActiveAccordion] = useState('hero');
   const [currentSlide, setCurrentSlide] = useState(0);
+  const [renderIndex, setRenderIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
   const [saveStatus, setSaveStatus] = useState('idle');
   const [isAppLoaded, setIsAppLoaded] = useState(false);
+  const [isNotFound, setIsNotFound] = useState(false);
+  const [isPublicView, setIsPublicView] = useState(() => {
+    const path = window.location.pathname;
+    return path.startsWith('/c/') || new URLSearchParams(window.location.search).has('p');
+  });
+
+  const activeProject = projects.find(p => p.id === activeProjectId) || projects[0] || defaultProjects[0];
+  const projectData = activeProject.data;
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const path = decodeURIComponent(window.location.pathname);
+    const rawPathSegment = path.startsWith('/c/') ? path.split('/c/')[1].replace(/\/$/, '') : null;
+    const sharedParam = rawPathSegment || params.get('p');
+    if (sharedParam) setIsPublicView(true);
+
+    // Parse the share URL format: /c/nombre-del-proyecto--ID
+    // The ID is the reliable part (after --), the slug is for readability
+    let sharedId = null;
+    let sharedSlug = null;
+    if (sharedParam) {
+      if (sharedParam.includes('--')) {
+        const parts = sharedParam.split('--');
+        sharedSlug = parts[0];
+        sharedId = parts[1];
+      } else {
+        // Fallback: could be just an ID or just a slug (backwards compat)
+        sharedId = sharedParam;
+        sharedSlug = sharedParam;
+      }
+    }
+
     StorageManager.load().then((saved) => {
+      console.log("Loading projects context:", { 
+        count: saved?.length || 0, 
+        sharedParam, 
+        isPublic: isPublicView 
+      });
+
       if (saved && saved.length > 0) {
         setProjects(saved);
-        setActiveProjectId(saved[0].id);
+        if (sharedId || sharedSlug) {
+          // 1. Exact ID match (Preferred)
+          let shared = sharedId ? saved.find(p => String(p.id) === String(sharedId)) : null;
+          
+          // 2. Exact Slug match
+          if (!shared && sharedSlug) {
+            shared = saved.find(p => p.name && slugify(p.name) === sharedSlug);
+          }
+          
+          // 3. Fallback: Search the whole sharedParam as an ID or Slug
+          if (!shared && sharedParam) {
+            shared = saved.find(p => String(p.id) === String(sharedParam) || (p.name && slugify(p.name) === sharedParam));
+          }
+
+          if (shared) {
+            console.log("Matched project found:", shared.name);
+            setActiveProjectId(shared.id);
+            setIsFullscreen(true);
+          } else if (isPublicView) {
+            console.error("Project match failed:", { sharedId, sharedSlug, sharedParam });
+            setIsNotFound(true);
+          } else {
+            setActiveProjectId(saved[0].id);
+          }
+        } else {
+          setActiveProjectId(saved[0].id);
+        }
       } else {
-        setActiveProjectId(defaultProjects[0].id);
+        // If it's a public view and we found NO projects, it's definitely an error
+        if (isPublicView) {
+          console.error("No projects returned from Notion during public view");
+          setIsNotFound(true);
+        } else if (saved !== null) {
+          // If saved is [], we just show the default
+          setActiveProjectId(defaultProjects[0].id);
+        }
+        // If saved is null, it means the fetch failed completely
       }
       setIsAppLoaded(true);
     }).catch(err => {
-      console.error(err);
-      setActiveProjectId(defaultProjects[0].id);
+      console.error("Critical loading error:", err);
+      if (isPublicView) setIsNotFound(true);
       setIsAppLoaded(true);
     });
   }, []);
 
+  const scrollTimeout = React.useRef(null);
+  const lastScrollTime = React.useRef(0);
+
+  const handleNext = () => {
+    if (currentSlide === 4 && renderIndex < (projectData.renders?.length || 0) - 1) {
+      setRenderIndex(prev => prev + 1);
+    } else if (currentSlide < MAX_SLIDES - 1) {
+      setCurrentSlide(prev => prev + 1);
+      setRenderIndex(0);
+    }
+  };
+
+  const handlePrev = () => {
+    if (currentSlide === 4 && renderIndex > 0) {
+      setRenderIndex(prev => prev - 1);
+    } else if (currentSlide > 0) {
+      setCurrentSlide(prev => prev - 1);
+      setRenderIndex(0);
+    }
+  };
+
   useEffect(() => {
-    const handleKeyDown = (e) => { if (e.key === 'Escape' && isFullscreen) setIsFullscreen(false); };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) setIsFullscreen(false);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') handleNext();
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') handlePrev();
+    };
+
+    const handleWheel = (e) => {
+      const now = Date.now();
+      if (now - lastScrollTime.current < 900) return; // Debounce 0.9s
+
+      if (Math.abs(e.deltaY) > 30) {
+        if (e.deltaY > 0) handleNext();
+        else handlePrev();
+        lastScrollTime.current = now;
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreen]);
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('wheel', handleWheel);
+    };
+  }, [isFullscreen, currentSlide, renderIndex, projectData]);
 
   const handleSaveChanges = async () => {
     setSaveStatus('saving');
     try {
-      await StorageManager.save(projects);
+      await StorageManager.save(projects, activeProjectId);
       setSaveStatus('saved');
     } catch (err) {
       console.error(err);
@@ -809,6 +1096,74 @@ export default function App() {
       }
       return p;
     }));
+  };
+
+  const handleExportHtml = () => {
+    const brandName = projectData.brand.name || 'Proyecto';
+    
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${brandName} · Propuesta B2B</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        :root { --brand-primary: ${projectData.brand.primaryColor}; }
+        body { background: #0A0514; color: white; font-family: 'Outfit', sans-serif; }
+        .ceo-text b { color: var(--brand-primary); font-weight: 700; }
+        .bg-glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); }
+    </style>
+</head>
+<body class="min-h-screen overflow-x-hidden">
+    <div id="viewer" class="max-w-4xl mx-auto p-8 space-y-20 py-20">
+        <section class="text-center space-y-8">
+            <div class="inline-block px-4 py-1 rounded-full border border-[var(--brand-primary)] text-[var(--brand-primary)] text-[10px] tracking-widest font-bold uppercase">
+                ${projectData.hero.badge}
+            </div>
+            <h1 class="text-4xl md:text-6xl font-bold leading-tight ceo-text">
+                ${projectData.hero.titleHtml}
+            </h1>
+        </section>
+        <section class="grid md:grid-cols-2 gap-12 items-center bg-glass p-8 rounded-3xl border border-white/10">
+            <div class="space-y-6">
+                <h2 class="text-xs tracking-[0.3em] uppercase text-white/40 font-bold">Invitación del CEO</h2>
+                <div class="text-lg leading-relaxed ceo-text">
+                    ${projectData.ceoInvitation.htmlMessage}
+                </div>
+            </div>
+            ${projectData.ceoInvitation.photoUrl ? `<img src="${projectData.ceoInvitation.photoUrl}" class="rounded-2xl w-full aspect-[3/4] object-cover shadow-2xl border border-white/10" />` : ''}
+        </section>
+        <section class="space-y-8">
+            <h2 class="text-center text-xs tracking-[0.3em] uppercase text-white/40 font-bold">Visualización Espacial</h2>
+            <div class="grid gap-8">
+                ${projectData.renders.map(r => `
+                    <div class="space-y-4">
+                        <img src="${r.imgUrl}" class="w-full rounded-2xl border border-white/10 shadow-xl" />
+                        <p class="text-center text-sm text-white/60 ceo-text">${r.subtitle}</p>
+                    </div>
+                `).join('')}
+            </div>
+        </section>
+        <footer class="text-center py-20 border-t border-white/10">
+            <p class="text-white/40 text-xs tracking-widest uppercase mb-4">Generado por B2B CEO Builder</p>
+            <div class="font-bold text-[var(--brand-primary)]">${projectData.studio.name}</div>
+        </footer>
+    </div>
+</body>
+</html>`;
+
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Propuesta_${brandName.replace(/\s+/g, '_')}.html`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleAddRender = () => {
@@ -890,215 +1245,303 @@ export default function App() {
   const handleRenameProject = (id, newName) => {
     setProjects(projects.map(p => p.id === id ? { ...p, name: newName } : p));
   };
-
-  const handleShareLink = () => {
-    const url = `https://elite24studio.com.co/propuesta/${activeProjectId}`;
-    const fallbackCopy = (text) => {
+  const handleShareLink = async () => {
+    // Auto-guardar antes de compartir para asegurar que los datos estén en la nube
+    if (!isPublicView) {
+      await handleSaveChanges();
+    }
+    
+    // Format: /c/nombre-del-proyecto--ID
+    // Slug gives readability & trust, ID ensures reliable matching
+    const slug = slugify(activeProject.name);
+    const url = `${window.location.origin}/c/${slug}--${activeProject.id}`;
+    
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(url.toString()).then(() => {
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      });
+    } else {
+      // Fallback para navegadores antiguos
       const textArea = document.createElement("textarea");
-      textArea.value = text;
+      textArea.value = url.toString();
       textArea.style.position = "fixed";
       document.body.appendChild(textArea);
       textArea.focus();
       textArea.select();
-      try { document.execCommand('copy'); setIsCopied(true); setTimeout(() => setIsCopied(false), 2000); } catch (err) { }
+      try {
+        document.execCommand('copy');
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      } catch (err) {
+        console.error('Fallback copy failed', err);
+      }
       document.body.removeChild(textArea);
-    };
-
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(url).then(() => { setIsCopied(true); setTimeout(() => setIsCopied(false), 2000); }).catch(() => fallbackCopy(url));
-    } else {
-      fallbackCopy(url);
     }
   };
 
-  if (!isAppLoaded) {
+  if (isNotFound) {
     return (
-      <div className="w-screen h-screen bg-[#0A0514] flex flex-col items-center justify-center text-white">
-        <div className="w-16 h-16 border-4 border-white/10 border-t-[#8A05BE] rounded-full animate-spin mb-6"></div>
-        <p className="text-xs uppercase tracking-widest font-bold text-white/50 animate-pulse">Cargando Bóveda Segura...</p>
+      <div className="w-screen h-screen bg-[#0A0514] flex flex-col items-center justify-center text-white px-8 text-center">
+        <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mb-8 border border-red-500/20">
+          <Trash2 className="text-red-500" size={32} />
+        </div>
+        <h2 className="text-3xl font-bold mb-4 uppercase tracking-tighter">Propuesta no encontrada</h2>
+        <p className="text-white/50 max-w-md text-sm leading-relaxed mb-8">
+          Lo sentimos, el enlace al que intentas acceder no existe o ha sido movido. 
+          Por favor, contacta a tu asesor de ELITE 24 STUDIO.
+        </p>
+        <a href="https://elite24studio.com.co/" className="px-8 py-3 rounded-full bg-white/5 border border-white/10 text-xs font-bold uppercase tracking-widest hover:bg-white/10 transition-all">
+          Ir a la web principal
+        </a>
       </div>
     );
   }
 
-  const activeProject = projects.find(p => p.id === activeProjectId) || projects[0];
-  const projectData = activeProject.data;
+  if (!isAppLoaded) {
+    return (
+      <div className="w-screen h-screen bg-[#0A0514] flex flex-col items-center justify-center text-white">
+        <div className="w-16 h-16 border-4 border-white/10 border-t-[#8A05BE] rounded-full animate-spin mb-6 shadow-[0_0_20px_#8A05BE]/20"></div>
+        <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-white/50 animate-pulse">
+          {isPublicView ? 'Iniciando Experiencia Digital...' : 'Cargando Bóveda Segura...'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-screen bg-[#0A0514] font-sans overflow-hidden flex" style={{ '--brand-primary': projectData.brand.primaryColor, '--brand-accent': projectData.brand.accentColor }}>
-      <aside className={`w-[280px] h-full bg-[#05020A] border-r border-[#2D1B4E] flex flex-col z-40 ${isFullscreen ? 'hidden' : 'flex'}`}>
-        <div className="p-4 border-b border-[#2D1B4E] flex items-center gap-3 bg-[#110822]">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#8A05BE] to-[#3B0059] flex items-center justify-center font-bold text-white shadow-[0_0_15px_#8A05BE]">E24</div>
-          <div><h1 className="text-white text-sm font-bold tracking-wider">ELITE 24 STUDIO</h1><p className="text-white/40 text-[10px] tracking-widest uppercase">B2B Builder</p></div>
-        </div>
-
-        <div className="p-4 flex-1 flex flex-col">
-          <button onClick={handleCreateProject} className="w-full bg-[#8A05BE] hover:bg-[#9B06D6] text-white rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-bold transition-colors shadow-[0_0_20px_#8A05BE]/30 mb-3">
-            <Plus size={16} /> Nuevo proyecto
-          </button>
-          <button onClick={() => setShowAiModal(true)} className="w-full bg-gradient-to-r from-blue-600 via-purple-600 to-[#8A05BE] text-white rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-bold transition-all duration-300 shadow-[0_0_20px_rgba(138,5,190,0.3)] mb-6 hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(138,5,190,0.6)]">
-            <Sparkles size={16} className="animate-pulse" /> IA FAST BUILDER
-          </button>
-
-          <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold mb-3 px-1">PROYECTOS GUARdados</div>
-          <div className="space-y-1 overflow-y-auto custom-scrollbar flex-1 pr-2">
-            {projects.map(proj => (
-              <ProjectListItem key={proj.id} proj={proj} isActive={activeProjectId === proj.id} onClick={() => { setActiveProjectId(proj.id); setActiveAccordion('hero'); setCurrentSlide(0); }} onRename={handleRenameProject} onDuplicate={handleDuplicateProject} onDelete={handleDeleteProject} />
-            ))}
+      {!isPublicView && (
+        <aside className={`w-[280px] h-full bg-[#05020A] border-r border-[#2D1B4E] flex flex-col z-40 ${isFullscreen ? 'hidden' : 'flex'}`}>
+          <div className="p-4 border-b border-[#2D1B4E] flex items-center gap-3 bg-[#110822]">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#8A05BE] to-[#3B0059] flex items-center justify-center font-bold text-white shadow-[0_0_15px_#8A05BE]">E24</div>
+            <div><h1 className="text-white text-sm font-bold tracking-wider">ELITE 24 STUDIO</h1><p className="text-white/40 text-[10px] tracking-widest uppercase">B2B Builder</p></div>
           </div>
-        </div>
-      </aside>
 
-      <section className={`w-[400px] h-full bg-[#0A0514] border-r border-[#2D1B4E] flex flex-col z-30 ${isFullscreen ? 'hidden' : 'flex'}`}>
-        <div className="p-4 border-b border-[#2D1B4E] bg-[#110822]">
-          <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">PROYECTO ACTIVO</div>
-          <h2 className="text-white text-lg font-bold truncate">{projectData.brand.name}</h2>
-        </div>
+          <div className="p-4 flex-1 flex flex-col">
+            <button onClick={handleCreateProject} className="w-full bg-[#8A05BE] hover:bg-[#9B06D6] text-white rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-bold transition-colors shadow-[0_0_20px_#8A05BE]/30 mb-3">
+              <Plus size={16} /> Nuevo proyecto
+            </button>
+            <button onClick={() => setShowAiModal(true)} className="w-full bg-gradient-to-r from-blue-600 via-purple-600 to-[#8A05BE] text-white rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-bold transition-all duration-300 shadow-[0_0_20px_rgba(138,5,190,0.3)] mb-6 hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(138,5,190,0.6)]">
+              <Sparkles size={16} className="animate-pulse" /> IA FAST BUILDER
+            </button>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar pb-20">
-          <Accordion title="Identidad de la marca" isOpen={activeAccordion === 'brand'} onClick={() => setActiveAccordion(activeAccordion === 'brand' ? null : 'brand')}>
-            <div className="space-y-4">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Nombre de la marca</label><input type="text" value={projectData.brand.name} onChange={e => handleUpdateData('brand', 'name', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none transition-colors" /></div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Color primario</label><div className="flex items-center gap-2"><input type="color" value={projectData.brand.primaryColor} onChange={e => handleUpdateData('brand', 'primaryColor', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" /><input type="text" value={projectData.brand.primaryColor} onChange={e => handleUpdateData('brand', 'primaryColor', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1.5 text-xs text-white uppercase font-mono" /></div></div>
+            <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold mb-3 px-1">PROYECTOS GUARDADOS</div>
+            <div className="space-y-1 overflow-y-auto custom-scrollbar flex-1 pr-2">
+              {projects.map(proj => (
+                <ProjectListItem key={proj.id} proj={proj} isActive={activeProjectId === proj.id} onClick={() => { setActiveProjectId(proj.id); setActiveAccordion('hero'); setCurrentSlide(0); }} onRename={handleRenameProject} onDuplicate={handleDuplicateProject} onDelete={handleDeleteProject} />
+              ))}
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {!isPublicView && (
+        <section className={`w-[400px] h-full bg-[#0A0514] border-r border-[#2D1B4E] flex flex-col z-30 ${isFullscreen ? 'hidden' : 'flex'}`}>
+          <div className="p-4 border-b border-[#2D1B4E] bg-[#110822]">
+            <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">PROYECTO ACTIVO</div>
+            <h2 className="text-white text-lg font-bold truncate">{projectData.brand.name}</h2>
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar pb-20">
+            <Accordion title="Identidad de la marca" isOpen={activeAccordion === 'brand'} onClick={() => setActiveAccordion(activeAccordion === 'brand' ? null : 'brand')}>
+              <div className="space-y-4">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Nombre de la marca</label><input type="text" value={projectData.brand.name} onChange={e => handleUpdateData('brand', 'name', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none transition-colors" /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Color primario</label><div className="flex items-center gap-2"><input type="color" value={projectData.brand.primaryColor} onChange={e => handleUpdateData('brand', 'primaryColor', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" /><input type="text" value={projectData.brand.primaryColor} onChange={e => handleUpdateData('brand', 'primaryColor', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1.5 text-xs text-white uppercase font-mono" /></div></div>
+                </div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Logo de la marca (opcional)</label><ImageUploader value={projectData.brand.logoUrl} onChange={val => handleUpdateData('brand', 'logoUrl', val)} /></div>
               </div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Logo de la marca (opcional)</label><ImageUploader value={projectData.brand.logoUrl} onChange={val => handleUpdateData('brand', 'logoUrl', val)} /></div>
-            </div>
-          </Accordion>
+            </Accordion>
 
-          <Accordion title="Tu estudio" isOpen={activeAccordion === 'studio'} onClick={() => setActiveAccordion(activeAccordion === 'studio' ? null : 'studio')}>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Nombre estudio</label><input type="text" value={projectData.studio.name} onChange={e => handleUpdateData('studio', 'name', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">NIT</label><input type="text" value={projectData.studio.nit} onChange={e => handleUpdateData('studio', 'nit', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div></div>
-              <div className="grid grid-cols-2 gap-4"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">CEO</label><input type="text" value={projectData.studio.ceo} onChange={e => handleUpdateData('studio', 'ceo', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Iniciales</label><input type="text" value={projectData.studio.iniciales} onChange={e => handleUpdateData('studio', 'iniciales', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Email gerencia</label><input type="email" value={projectData.studio.email} onChange={e => handleUpdateData('studio', 'email', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Logo Estudio</label><ImageUploader value={projectData.studio.logoUrl} onChange={val => handleUpdateData('studio', 'logoUrl', val)} className="h-24" /></div>
-            </div>
-          </Accordion>
+            <Accordion title="Tu estudio" isOpen={activeAccordion === 'studio'} onClick={() => setActiveAccordion(activeAccordion === 'studio' ? null : 'studio')}>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Nombre estudio</label><input type="text" value={projectData.studio.name} onChange={e => handleUpdateData('studio', 'name', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">NIT</label><input type="text" value={projectData.studio.nit} onChange={e => handleUpdateData('studio', 'nit', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div></div>
+                <div className="grid grid-cols-2 gap-4"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">CEO</label><input type="text" value={projectData.studio.ceo} onChange={e => handleUpdateData('studio', 'ceo', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Iniciales</label><input type="text" value={projectData.studio.iniciales} onChange={e => handleUpdateData('studio', 'iniciales', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Email gerencia</label><input type="email" value={projectData.studio.email} onChange={e => handleUpdateData('studio', 'email', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Logo Estudio</label><ImageUploader value={projectData.studio.logoUrl} onChange={val => handleUpdateData('studio', 'logoUrl', val)} className="h-24" /></div>
+              </div>
+            </Accordion>
 
-          <Accordion title="Portada (Hero)" badge="1" isOpen={activeAccordion === 'hero'} onClick={() => { setActiveAccordion('hero'); setCurrentSlide(0); }}>
-            <div className="space-y-4">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Badge superior</label><input type="text" value={projectData.hero.badge} onChange={e => handleUpdateData('hero', 'badge', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Pregunta principal (HTML)</label><textarea value={projectData.hero.titleHtml} onChange={e => handleUpdateData('hero', 'titleHtml', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-24 resize-none custom-scrollbar" /></div>
-            </div>
-          </Accordion>
+            <Accordion title="Portada (Hero)" badge="1" isOpen={activeAccordion === 'hero'} onClick={() => { 
+              const next = activeAccordion === 'hero' ? null : 'hero';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(0); 
+            }}>
+              <div className="space-y-4">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Badge superior</label><input type="text" value={projectData.hero.badge} onChange={e => handleUpdateData('hero', 'badge', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Pregunta principal (HTML)</label><textarea value={projectData.hero.titleHtml} onChange={e => handleUpdateData('hero', 'titleHtml', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-24 resize-none custom-scrollbar" /></div>
+              </div>
+            </Accordion>
 
-          <Accordion title="Invitación CEO" badge="2" isOpen={activeAccordion === 'ceo'} onClick={() => { setActiveAccordion('ceo'); setCurrentSlide(2); }}>
-            <div className="space-y-6">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cuerpo del saludo (HTML)</label><textarea value={projectData.ceoInvitation.htmlMessage} onChange={e => handleUpdateData('ceoInvitation', 'htmlMessage', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
-              <div className="grid grid-cols-3 gap-2"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 1</label><input type="text" value={projectData.ceoInvitation.metric1.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric1', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric1.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric1', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 2</label><input type="text" value={projectData.ceoInvitation.metric2.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric2', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric2.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric2', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 3</label><input type="text" value={projectData.ceoInvitation.metric3.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric3', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric3.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric3', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Foto CEO (Retrato)</label><ImageUploader value={projectData.ceoInvitation.photoUrl} onChange={val => handleUpdateData('ceoInvitation', 'photoUrl', val)} className="h-40" /></div>
-            </div>
-          </Accordion>
+            <Accordion title="Invitación CEO" badge="2" isOpen={activeAccordion === 'ceo'} onClick={() => { 
+              const next = activeAccordion === 'ceo' ? null : 'ceo';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(2); 
+            }}>
+              <div className="space-y-6">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cuerpo del saludo (HTML)</label><textarea value={projectData.ceoInvitation.htmlMessage} onChange={e => handleUpdateData('ceoInvitation', 'htmlMessage', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
+                <div className="grid grid-cols-3 gap-2"><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 1</label><input type="text" value={projectData.ceoInvitation.metric1.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric1', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric1.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric1', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 2</label><input type="text" value={projectData.ceoInvitation.metric2.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric2', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric2.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric2', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div><div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Métrica 3</label><input type="text" value={projectData.ceoInvitation.metric3.value} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric3', 'value', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-2 text-center text-sm text-white mb-2" /><input type="text" value={projectData.ceoInvitation.metric3.label} onChange={e => handleUpdateNestedData('ceoInvitation', 'metric3', 'label', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-2 py-1 text-center text-[9px] text-white uppercase" /></div></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Foto CEO (Retrato)</label><ImageUploader value={projectData.ceoInvitation.photoUrl} onChange={val => handleUpdateData('ceoInvitation', 'photoUrl', val)} className="h-40" /></div>
+              </div>
+            </Accordion>
 
-          <Accordion title="Visión conceptual" badge="3" isOpen={activeAccordion === 'vision'} onClick={() => { setActiveAccordion('vision'); setCurrentSlide(3); }}>
-            <div className="space-y-6">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título (HTML)</label><textarea value={projectData.vision.titleHtml} onChange={e => handleUpdateNestedData('vision', null, 'titleHtml', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none min-h-[80px] custom-scrollbar" /></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo descriptivo</label><textarea value={projectData.vision.description} onChange={e => handleUpdateNestedData('vision', null, 'description', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none min-h-[80px] custom-scrollbar" /></div>
-              <div className="border-t border-[#2D1B4E] pt-4 space-y-4">
-                <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold mb-4">Tarjetas de Estrategia (5)</p>
-                {projectData.vision.cards.map((card, index) => (
-                  <div key={card.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] space-y-3 relative group">
-                    <div className="absolute -top-2 -left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-lg">0{index + 1}</div>
-                    <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título Tarjeta</label><input type="text" value={card.title} onChange={e => handleUpdateVisionCard(index, 'title', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white" /></div>
-                    <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Descripción breve</label><textarea value={card.text} onChange={e => handleUpdateVisionCard(index, 'text', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white h-16 resize-none custom-scrollbar" /></div>
-                    <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Imagen Conceptual</label><ImageUploader value={card.imgUrl} onChange={val => handleUpdateVisionCard(index, 'imgUrl', val)} className="mt-0" /></div>
+            <Accordion title="Visión conceptual" badge="3" isOpen={activeAccordion === 'vision'} onClick={() => { 
+              const next = activeAccordion === 'vision' ? null : 'vision';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(3); 
+            }}>
+              <div className="space-y-6">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título (HTML)</label><textarea value={projectData.vision.titleHtml} onChange={e => handleUpdateNestedData('vision', null, 'titleHtml', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none min-h-[80px] custom-scrollbar" /></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo descriptivo</label><textarea value={projectData.vision.description} onChange={e => handleUpdateNestedData('vision', null, 'description', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none min-h-[80px] custom-scrollbar" /></div>
+                <div className="border-t border-[#2D1B4E] pt-4 space-y-4">
+                  <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold mb-4">Tarjetas de Estrategia (5)</p>
+                  {projectData.vision.cards.map((card, index) => (
+                    <div key={card.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] space-y-3 relative group">
+                      <div className="absolute -top-2 -left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-lg">0{index + 1}</div>
+                      <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título Tarjeta</label><input type="text" value={card.title} onChange={e => handleUpdateVisionCard(index, 'title', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white" /></div>
+                      <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Descripción breve</label><textarea value={card.text} onChange={e => handleUpdateVisionCard(index, 'text', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white h-16 resize-none custom-scrollbar" /></div>
+                      <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Imagen Conceptual</label><ImageUploader value={card.imgUrl} onChange={val => handleUpdateVisionCard(index, 'imgUrl', val)} className="mt-0" /></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Accordion>
+
+            <Accordion title={`Renders del proyecto (${projectData.renders?.length || 0})`} badge="4" isOpen={activeAccordion === 'renders'} onClick={() => { 
+              const next = activeAccordion === 'renders' ? null : 'renders';
+              setActiveAccordion(next); 
+              if (next) { setCurrentSlide(4); setRenderIndex(0); }
+            }}>
+              <div className="space-y-4">
+                {projectData.renders.map((render, index) => (
+                  <div key={render.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] border-dashed space-y-4 relative group">
+                    <div className="absolute top-2 left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded flex items-center justify-center text-[10px] font-bold shadow-lg">0{index + 1}</div>
+                    {projectData.renders.length > 1 && (<button onClick={() => handleRemoveRender(index)} className="absolute top-2 right-2 text-white/20 hover:text-red-400 p-1 transition-colors"><Trash2 size={14} /></button>)}
+                    <div className="pt-6">
+                      <ImageUploader value={render.imgUrl} onChange={val => handleUpdateRender(index, 'imgUrl', val)} className="h-24 mb-3" />
+                      <input type="text" value={render.subtitle} onChange={e => handleUpdateRender(index, 'subtitle', e.target.value)} placeholder="Ej: Lobby principal · <b>Hito de marca</b>" className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white text-center focus:border-[var(--brand-primary)] outline-none" />
+                    </div>
+                  </div>
+                ))}
+                {projectData.renders.length < 7 && (
+                  <button onClick={handleAddRender} className="w-full py-3 border border-dashed border-[#2D1B4E] rounded-lg text-white/40 hover:text-white hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)]/5 transition-all text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-2 mt-4">
+                    <Plus size={14} /> Añadir Render ({projectData.renders.length}/7)
+                  </button>
+                )}
+              </div>
+            </Accordion>
+
+            <Accordion title="Recordatorio" badge="5" isOpen={activeAccordion === 'reminder'} onClick={() => { 
+              const next = activeAccordion === 'reminder' ? null : 'reminder';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(5); 
+            }}>
+              <div className="space-y-4">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo (HTML)</label><textarea value={projectData.reminder.htmlText} onChange={e => handleUpdateData('reminder', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
+              </div>
+            </Accordion>
+
+            <Accordion title={`Pilares (${projectData.pillars?.length || 0} cards)`} badge="6" isOpen={activeAccordion === 'pillars'} onClick={() => { 
+              const next = activeAccordion === 'pillars' ? null : 'pillars';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(6); 
+            }}>
+              <div className="space-y-4">
+                {projectData.pillars.map((pillar, idx) => (
+                  <div key={pillar.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] space-y-3 relative group">
+                    <div className="absolute -top-2 -left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-lg">0{idx + 1}</div>
+                    <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título</label><input type="text" value={pillar.title} onChange={e => handleUpdatePillar(idx, 'title', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
+                    <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Texto</label><textarea value={pillar.text} onChange={e => handleUpdatePillar(idx, 'text', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-24 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
                   </div>
                 ))}
               </div>
-            </div>
-          </Accordion>
+            </Accordion>
 
-          <Accordion title={`Renders del proyecto (${projectData.renders.length})`} badge="4" isOpen={activeAccordion === 'renders'} onClick={() => { setActiveAccordion('renders'); setCurrentSlide(4); }}>
-            <div className="space-y-4">
-              {projectData.renders.map((render, index) => (
-                <div key={render.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] border-dashed space-y-4 relative group">
-                  <div className="absolute top-2 left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded flex items-center justify-center text-[10px] font-bold shadow-lg">0{index + 1}</div>
-                  {projectData.renders.length > 1 && (<button onClick={() => handleRemoveRender(index)} className="absolute top-2 right-2 text-white/20 hover:text-red-400 p-1 transition-colors"><Trash2 size={14} /></button>)}
-                  <div className="pt-6">
-                    <ImageUploader value={render.imgUrl} onChange={val => handleUpdateRender(index, 'imgUrl', val)} className="h-24 mb-3" />
-                    <input type="text" value={render.subtitle} onChange={e => handleUpdateRender(index, 'subtitle', e.target.value)} placeholder="Ej: Lobby principal · <b>Hito de marca</b>" className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white text-center focus:border-[var(--brand-primary)] outline-none" />
-                  </div>
-                </div>
-              ))}
-              {projectData.renders.length < 7 && (
-                <button onClick={handleAddRender} className="w-full py-3 border border-dashed border-[#2D1B4E] rounded-lg text-white/40 hover:text-white hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)]/5 transition-all text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-2 mt-4">
-                  <Plus size={14} /> Añadir Render ({projectData.renders.length}/7)
-                </button>
-              )}
-            </div>
-          </Accordion>
+            <Accordion title="CTA Final" badge="7" isOpen={activeAccordion === 'cta'} onClick={() => { 
+              const next = activeAccordion === 'cta' ? null : 'cta';
+              setActiveAccordion(next); 
+              if (next) setCurrentSlide(7); 
+            }}>
+              <div className="space-y-6">
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cita destacada</label><input type="text" value={projectData.ctaFinal.quote} onChange={e => handleUpdateData('ctaFinal', 'quote', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
+                <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo CTA (HTML)</label><textarea value={projectData.ctaFinal.htmlText} onChange={e => handleUpdateData('ctaFinal', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
+              </div>
+            </Accordion>
 
-          <Accordion title="Recordatorio" badge="5" isOpen={activeAccordion === 'reminder'} onClick={() => { setActiveAccordion('reminder'); setCurrentSlide(5); }}>
-            <div className="space-y-4">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo (HTML)</label><textarea value={projectData.reminder.htmlText} onChange={e => handleUpdateData('reminder', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
+            <div className="p-6 mt-4 mb-10 border-t border-[#2D1B4E]">
+              <button
+                onClick={handleSaveChanges}
+                className={`w-full py-4 rounded-xl text-xs font-bold tracking-[0.2em] uppercase transition-all duration-500 shadow-lg flex items-center justify-center gap-3 relative overflow-hidden group
+                  ${saveStatus === 'saved' ? 'bg-green-500 text-white shadow-[0_0_30px_rgba(34,197,94,0.4)]' :
+                    saveStatus === 'error' ? 'bg-red-500 text-white' :
+                      'bg-[var(--brand-primary)] text-white shadow-[0_0_20px_var(--brand-primary)] hover:scale-[1.02]'}`}
+              >
+                {saveStatus === 'saved' ? <CheckCircle size={18} /> : saveStatus === 'error' ? 'Error de Bóveda' : <Save size={18} className="group-hover:-translate-y-1 transition-transform" />}
+                {saveStatus === 'saving' ? 'Guardando...' : saveStatus === 'saved' ? '¡Cambios Guardados!' : saveStatus === 'error' ? 'Vuelve a intentar' : 'Guardar Proyecto'}
+                {saveStatus === 'saving' && <div className="absolute inset-0 bg-white/20 w-full animate-pulse"></div>}
+              </button>
+              <p className="text-center text-[9px] text-white/30 tracking-widest uppercase mt-4">Almacenamiento Ilimitado (IndexedDB)</p>
             </div>
-          </Accordion>
-
-          <Accordion title={`Pilares (${projectData.pillars.length} cards)`} badge="6" isOpen={activeAccordion === 'pillars'} onClick={() => { setActiveAccordion('pillars'); setCurrentSlide(6); }}>
-            <div className="space-y-4">
-              {projectData.pillars.map((pillar, idx) => (
-                <div key={pillar.id} className="bg-[#150C22] p-4 rounded-lg border border-[#2D1B4E] space-y-3 relative group">
-                  <div className="absolute -top-2 -left-2 w-6 h-6 bg-[var(--brand-primary)] text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-lg">0{idx + 1}</div>
-                  <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título</label><input type="text" value={pillar.title} onChange={e => handleUpdatePillar(idx, 'title', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
-                  <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Texto</label><textarea value={pillar.text} onChange={e => handleUpdatePillar(idx, 'text', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-24 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
-                </div>
-              ))}
-            </div>
-          </Accordion>
-
-          <Accordion title="CTA Final" badge="7" isOpen={activeAccordion === 'cta'} onClick={() => { setActiveAccordion('cta'); setCurrentSlide(7); }}>
-            <div className="space-y-6">
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cita destacada</label><input type="text" value={projectData.ctaFinal.quote} onChange={e => handleUpdateData('ctaFinal', 'quote', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
-              <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo CTA (HTML)</label><textarea value={projectData.ctaFinal.htmlText} onChange={e => handleUpdateData('ctaFinal', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
-            </div>
-          </Accordion>
-
-          <div className="p-6 mt-4 mb-10 border-t border-[#2D1B4E]">
-            <button
-              onClick={handleSaveChanges}
-              className={`w-full py-4 rounded-xl text-xs font-bold tracking-[0.2em] uppercase transition-all duration-500 shadow-lg flex items-center justify-center gap-3 relative overflow-hidden group
-                ${saveStatus === 'saved' ? 'bg-green-500 text-white shadow-[0_0_30px_rgba(34,197,94,0.4)]' :
-                  saveStatus === 'error' ? 'bg-red-500 text-white' :
-                    'bg-[var(--brand-primary)] text-white shadow-[0_0_20px_var(--brand-primary)] hover:scale-[1.02]'}`}
-            >
-              {saveStatus === 'saved' ? <CheckCircle size={18} /> : saveStatus === 'error' ? 'Error de Bóveda' : <Save size={18} className="group-hover:-translate-y-1 transition-transform" />}
-              {saveStatus === 'saving' ? 'Guardando...' : saveStatus === 'saved' ? '¡Cambios Guardados!' : saveStatus === 'error' ? 'Vuelve a intentar' : 'Guardar Proyecto'}
-              {saveStatus === 'saving' && <div className="absolute inset-0 bg-white/20 w-full animate-pulse"></div>}
-            </button>
-            <p className="text-center text-[9px] text-white/30 tracking-widest uppercase mt-4">Almacenamiento Ilimitado (IndexedDB)</p>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
-      <main className={`relative bg-black overflow-hidden flex flex-col transition-all duration-500 ease-in-out ${isFullscreen ? 'fixed inset-0 z-[9999] w-screen h-screen' : 'flex-1'}`}>
+      <main className={`relative bg-black overflow-hidden flex flex-col transition-all duration-500 ease-in-out ${isFullscreen || isPublicView ? 'fixed inset-0 z-[9999] w-screen h-screen' : 'flex-1'}`}>
         <header className="absolute top-0 w-full p-4 flex justify-end gap-3 z-50 pointer-events-none">
           <div className="pointer-events-auto flex gap-3">
-            <button onClick={handleShareLink} className={`bg-white/10 hover:bg-[var(--brand-primary)] text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-all shadow-lg ${isCopied ? 'bg-green-500 hover:bg-green-600' : ''}`}>
-              {isCopied ? <CheckCircle size={14} /> : <Share2 size={14} />} {isCopied ? '¡Link copiado!' : 'Compartir'}
-            </button>
-            <button onClick={() => setIsFullscreen(!isFullscreen)} className="bg-white/10 hover:bg-white/20 text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg">
-              {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />} {isFullscreen ? 'Salir (ESC)' : 'Pantalla completa'}
-            </button>
-            <button className="bg-[#E7B865] hover:bg-[#D4A352] text-black rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg shadow-[#E7B865]/20">
-              <Download size={14} /> Exportar HTML
-            </button>
+            {isPublicView ? (
+              <motion.div 
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-4 bg-black/40 backdrop-blur-xl px-6 py-2.5 rounded-full border border-white/10 shadow-2xl mr-4 mt-2"
+              >
+                <div className="w-6 h-6 rounded bg-gradient-to-br from-[#8A05BE] to-[#3B0059] flex items-center justify-center text-[8px] font-bold text-white shadow-[0_0_10px_#8A05BE]">E24</div>
+                <div className="w-px h-3 bg-white/20"></div>
+                <div className="text-[9px] tracking-[0.3em] uppercase text-white/60 font-bold">{projectData.studio.name}</div>
+              </motion.div>
+            ) : (
+              <>
+                <button onClick={handleShareLink} className={`bg-white/10 hover:bg-[var(--brand-primary)] text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-all shadow-lg ${isCopied ? 'bg-green-500 hover:bg-green-600' : ''}`}>
+                  {isCopied ? <CheckCircle size={14} /> : <Share2 size={14} />} {isCopied ? '¡Link copiado!' : 'Compartir'}
+                </button>
+                <button onClick={() => setIsFullscreen(!isFullscreen)} className="bg-white/10 hover:bg-white/20 text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg">
+                  {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />} {isFullscreen ? 'Salir (ESC)' : 'Pantalla completa'}
+                </button>
+                <button onClick={handleExportHtml} className="bg-[#E7B865] hover:bg-[#D4A352] text-black rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg shadow-[#E7B865]/20">
+                  <Download size={14} /> Exportar HTML
+                </button>
+              </>
+            )}
           </div>
         </header>
 
         <div className="w-full h-full relative">
-          {currentSlide === 0 && <HeroSlide data={projectData} onNext={() => { setCurrentSlide(1); setActiveAccordion(null); }} />}
-          {currentSlide === 1 && <ManifestoSlide data={projectData} />}
-          {currentSlide === 2 && <CeoSlide data={projectData} />}
-          {currentSlide === 3 && <VisionSlide data={projectData} />}
-          {currentSlide === 4 && <RendersSlide data={projectData} />}
-          {currentSlide === 5 && <ReminderSlide data={projectData} />}
-          {currentSlide === 6 && <PillarsSlide data={projectData} />}
-          {currentSlide === 7 && <CtaSlide data={projectData} />}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentSlide}
+              initial={{ opacity: 0, x: 50 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -50 }}
+              transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute inset-0 w-full h-full"
+            >
+              {currentSlide === 0 && <HeroSlide data={projectData} onNext={handleNext} />}
+              {currentSlide === 1 && <ManifestoSlide data={projectData} />}
+              {currentSlide === 2 && <CeoSlide data={projectData} />}
+              {currentSlide === 3 && <VisionSlide data={projectData} />}
+              {currentSlide === 4 && <RendersSlide data={projectData} activeIndex={renderIndex} onIndexChange={setRenderIndex} />}
+              {currentSlide === 5 && <ReminderSlide data={projectData} />}
+              {currentSlide === 6 && <PillarsSlide data={projectData} />}
+              {currentSlide === 7 && <CtaSlide data={projectData} onRestart={() => { setCurrentSlide(0); setRenderIndex(0); }} />}
+            </motion.div>
+          </AnimatePresence>
 
           <div className="absolute inset-y-0 left-0 w-32 flex items-center justify-start opacity-0 hover:opacity-100 transition-opacity z-40">
-            <button onClick={() => { const n = (currentSlide - 1 + MAX_SLIDES) % MAX_SLIDES; setCurrentSlide(n); }} className="ml-8 w-12 h-12 rounded-full border border-white/20 bg-black/20 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] hover:border-[var(--brand-primary)] transition-all backdrop-blur-md shadow-lg"><ChevronLeft /></button>
+            <button onClick={handlePrev} className="ml-8 w-12 h-12 rounded-full border border-white/20 bg-black/20 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] hover:border-[var(--brand-primary)] transition-all backdrop-blur-md shadow-lg"><ChevronLeft /></button>
           </div>
           <div className="absolute inset-y-0 right-0 w-32 flex items-center justify-end opacity-0 hover:opacity-100 transition-opacity z-40">
-            <button onClick={() => { const n = (currentSlide + 1) % MAX_SLIDES; setCurrentSlide(n); }} className="mr-8 w-12 h-12 rounded-full border border-white/20 bg-black/20 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] hover:border-[var(--brand-primary)] transition-all backdrop-blur-md shadow-lg"><ChevronRight /></button>
+            <button onClick={handleNext} className="mr-8 w-12 h-12 rounded-full border border-white/20 bg-black/20 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] hover:border-[var(--brand-primary)] transition-all backdrop-blur-md shadow-lg"><ChevronRight /></button>
           </div>
         </div>
       </main>

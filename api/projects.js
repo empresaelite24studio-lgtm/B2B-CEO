@@ -3,6 +3,27 @@ import { Client } from '@notionhq/client';
 const notion = new Client({ auth: process.env.NOTION_KEY });
 const databaseId = process.env.NOTION_DATABASE_ID;
 
+// Recursively strip base64 data URLs from project data before saving to Notion.
+// This ensures the JSON always fits within Notion's 200KB rich_text limit.
+// External URLs (http/https) are preserved.
+function stripBase64Images(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    // If it's a base64 data URL, replace with empty string
+    if (obj.startsWith('data:image/')) return '';
+    return obj;
+  }
+  if (Array.isArray(obj)) return obj.map(stripBase64Images);
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const key of Object.keys(obj)) {
+      result[key] = stripBase64Images(obj[key]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 export default async function handler(req, res) {
   if (!process.env.NOTION_KEY || !process.env.NOTION_DATABASE_ID) {
     return res.status(500).json({ error: 'Faltan variables de entorno NOTION_KEY o NOTION_DATABASE_ID' });
@@ -36,9 +57,13 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       // Guardar o actualizar proyecto
       const { id, name, date, data } = req.body;
-      const jsonString = JSON.stringify(data);
+      const safeName = name || 'Sin nombre';
+      const safeDate = date || '';
+      const safeId = String(id || Date.now());
+      // Strip base64 images so the project fits in Notion's text fields
+      const cleanData = stripBase64Images(data || {});
+      const jsonString = JSON.stringify(cleanData);
       
-      // Dividir el JSON en fragmentos de 2000 caracteres para Notion
       const chunks = [];
       for (let i = 0; i < jsonString.length; i += 2000) {
         chunks.push({
@@ -47,10 +72,17 @@ export default async function handler(req, res) {
         });
       }
 
+      if (chunks.length > 100) {
+        return res.status(400).json({ 
+          error: 'El proyecto es demasiado pesado para la base de datos (máx 200KB). Intenta subir imágenes más pequeñas o eliminar algunos renders.',
+          size: jsonString.length 
+        });
+      }
+
       // Buscar si ya existe para actualizar o crear
       const existing = await notion.databases.query({
         database_id: databaseId,
-        filter: { property: 'ProjectID', rich_text: { equals: id } }
+        filter: { property: 'ProjectID', rich_text: { equals: safeId } }
       });
 
       if (existing.results.length > 0) {
@@ -59,8 +91,8 @@ export default async function handler(req, res) {
         await notion.pages.update({
           page_id: pageId,
           properties: {
-            Name: { title: [{ text: { content: name } }] },
-            Date: { rich_text: [{ text: { content: date } }] },
+            Name: { title: [{ text: { content: safeName } }] },
+            Date: { rich_text: [{ text: { content: safeDate } }] },
             JSONData: { rich_text: chunks }
           }
         });
@@ -70,9 +102,9 @@ export default async function handler(req, res) {
         await notion.pages.create({
           parent: { database_id: databaseId },
           properties: {
-            Name: { title: [{ text: { content: name } }] },
-            ProjectID: { rich_text: [{ text: { content: id } }] },
-            Date: { rich_text: [{ text: { content: date } }] },
+            Name: { title: [{ text: { content: safeName } }] },
+            ProjectID: { rich_text: [{ text: { content: safeId } }] },
+            Date: { rich_text: [{ text: { content: safeDate } }] },
             JSONData: { rich_text: chunks }
           }
         });
