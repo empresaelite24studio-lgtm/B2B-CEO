@@ -14,27 +14,47 @@ app.get('/api/projects', async (req, res) => {
   try {
     const { id: fetchId } = req.query;
 
+    // Single project fetch by ID
     if (fetchId) {
       const existing = await notion.databases.query({
         database_id: databaseId,
         filter: { property: 'ProjectID', rich_text: { equals: fetchId } }
       });
       if (existing.results.length === 0) return res.status(404).json({ error: 'No encontrado' });
-      
+
       const page = existing.results[0];
+      const properties = page.properties;
+      const id = properties.ProjectID?.rich_text[0]?.plain_text || page.id;
+      const name = properties.Name?.title[0]?.plain_text || 'Sin nombre';
+      const date = properties.Date?.rich_text[0]?.plain_text || '';
+
+      // Try blocks first
       let blocks = [];
       let cursor;
-      do {
-        const response = await notion.blocks.children.list({ block_id: page.id, start_cursor: cursor });
-        blocks = blocks.concat(response.results);
-        cursor = response.next_cursor;
-      } while (cursor);
-      
-      const fullJsonString = blocks.map(b => b.paragraph?.rich_text.map(t => t.plain_text).join('') || '').join('');
-      let fullData = {};
-      try { fullData = JSON.parse(fullJsonString); } catch(e) {}
-      
-      return res.json({ id: fetchId, data: fullData });
+      try {
+        do {
+          const response = await notion.blocks.children.list({ block_id: page.id, start_cursor: cursor });
+          blocks = blocks.concat(response.results);
+          cursor = response.next_cursor;
+        } while (cursor);
+      } catch (e) {
+        console.error(e);
+      }
+
+      let data = {};
+      if (blocks.length > 0) {
+        const fullJsonString = blocks.map(b => b.paragraph?.rich_text?.map(t => t.plain_text).join('') || '').join('');
+        try { 
+          data = JSON.parse(fullJsonString); 
+        } catch (e) {}
+      }
+
+      if (!data || Object.keys(data).length === 0) {
+        const jsonDataRaw = properties.JSONData?.rich_text.map(t => t.plain_text).join('') || '{}';
+        try { data = JSON.parse(jsonDataRaw); } catch (e) {}
+      }
+
+      return res.json({ id, name, date, data });
     }
 
     const response = await notion.databases.query({ database_id: databaseId });
@@ -167,8 +187,8 @@ app.post('/api/send-email', async (req, res) => {
   try {
     const mailOptions = {
       from: `"B2B CEO - ${studioName}" <${process.env.SMTP_USER}>`,
-      to: email,
-      bcc: process.env.SMTP_USER,
+      to: process.env.SMTP_USER,
+      replyTo: email,
       subject: `Nueva solicitud de contacto - ${brandName}`,
       html: `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9f9f9; padding: 20px; border-radius: 10px;">

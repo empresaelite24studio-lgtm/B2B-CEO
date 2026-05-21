@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     // Cuerpo del correo
     const mailOptions = {
       from: `"B2B CEO - ${studioName}" <${process.env.SMTP_USER}>`,
-      to: process.env.SMTP_USER, // Enviar al administrador con los datos
+      to: process.env.SMTP_USER, // Enviar al mismo correo SMTP
       replyTo: email, // Para poder responder fácilmente al cliente
       subject: `Nueva solicitud de contacto - ${brandName}`,
       html: `

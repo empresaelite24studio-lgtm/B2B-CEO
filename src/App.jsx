@@ -243,15 +243,15 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_SIZE = 800; // Optimizado para no exceder límites de Notion (200KB total)
+        const MAX_SIZE = 1920; // Alta calidad (1080p), perfecto para renders a pantalla completa
         if (width > height && width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
         else if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        // WebP 0.5 es el punto óptimo entre legibilidad y tamaño para Notion
+        // WebP 0.85 mantiene calidad cristalina y optimiza el tamaño de la cadena base64
         const outputType = 'image/webp';
-        const quality = 0.5;
+        const quality = 0.85;
         onChange(canvas.toDataURL(outputType, quality));
       };
       img.src = e.target.result;
@@ -934,7 +934,6 @@ export default function App() {
     if (sharedParam) setIsPublicView(true);
 
     // Parse the share URL format: /c/nombre-del-proyecto--ID
-    // The ID is the reliable part (after --), the slug is for readability
     let sharedId = null;
     let sharedSlug = null;
     if (sharedParam) {
@@ -943,132 +942,92 @@ export default function App() {
         sharedSlug = parts[0];
         sharedId = parts[1];
       } else {
-        // Fallback: could be just an ID or just a slug (backwards compat)
         sharedId = sharedParam;
         sharedSlug = sharedParam;
       }
     }
 
-    StorageManager.load().then((saved) => {
-      console.log("Loading projects context:", { 
-        count: saved?.length || 0, 
-        sharedParam, 
-        isPublic: isPublicView 
-      });
+    // ── PUBLIC / SHARED VIEW: fetch the single project directly by ID ──
+    if (sharedParam) {
+      const targetId = sharedId || sharedSlug || sharedParam;
+      console.log("Public view – fetching project by ID:", targetId);
 
+      // Helper: try to find the project in a project list
+      const findInList = (list) => {
+        if (!list || list.length === 0) return null;
+        let found = list.find(p => String(p.id) === String(sharedId));
+        if (!found && sharedSlug) found = list.find(p => p.name && slugify(p.name) === sharedSlug);
+        if (!found) found = list.find(p => String(p.id) === String(sharedParam) || (p.name && slugify(p.name) === sharedParam));
+        return found;
+      };
+
+      // Strategy: fetch the project list from Notion (which works in any browser)
+      // and match the project. This is the same API call that works in normal mode.
+      fetch('/api/projects', { cache: 'no-store' })
+        .then(res => {
+          if (!res.ok) throw new Error(`API error ${res.status}`);
+          return res.json();
+        })
+        .then(allProjects => {
+          console.log("API returned", allProjects?.length || 0, "projects");
+          const found = findInList(allProjects);
+
+          if (found) {
+            console.log("Matched project:", found.name);
+            setProjects(allProjects);
+            setActiveProjectId(found.id);
+            setIsFullscreen(true);
+          } else {
+            console.warn("Project not found in list, trying direct fetch for ID:", targetId);
+            // Fallback: fetch the single project by ID
+            return fetch(`/api/projects?id=${targetId}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(single => {
+                if (single && single.data && Object.keys(single.data).length > 0) {
+                  const proj = { id: single.id, name: single.name || 'Propuesta', date: single.date || '', data: single.data };
+                  setProjects([proj]);
+                  setActiveProjectId(proj.id);
+                  setIsFullscreen(true);
+                } else {
+                  setIsNotFound(true);
+                }
+              });
+          }
+        })
+        .catch(err => {
+          console.error("Failed to load project for public view:", err);
+          // Last resort: try direct single-project fetch
+          fetch(`/api/projects?id=${targetId}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(single => {
+              if (single && single.data && Object.keys(single.data).length > 0) {
+                const proj = { id: single.id, name: single.name || 'Propuesta', date: single.date || '', data: single.data };
+                setProjects([proj]);
+                setActiveProjectId(proj.id);
+                setIsFullscreen(true);
+              } else {
+                setIsNotFound(true);
+              }
+            })
+            .catch(() => setIsNotFound(true));
+        })
+        .finally(() => setIsAppLoaded(true));
+
+      return; // Don't run normal load below
+    }
+
+    // ── NORMAL VIEW (admin panel) ──
+    StorageManager.load().then((saved) => {
       if (saved && saved.length > 0) {
         setProjects(saved);
-        if (sharedId || sharedSlug) {
-          // 1. Exact ID match (Preferred)
-          let shared = sharedId ? saved.find(p => String(p.id) === String(sharedId)) : null;
-          
-          // 2. Exact Slug match
-          if (!shared && sharedSlug) {
-            shared = saved.find(p => p.name && slugify(p.name) === sharedSlug);
-          }
-          
-          // 3. Fallback: Search the whole sharedParam as an ID or Slug
-          if (!shared && sharedParam) {
-            shared = saved.find(p => String(p.id) === String(sharedParam) || (p.name && slugify(p.name) === sharedParam));
-          }
-
-          if (shared) {
-            console.log("Matched project found:", shared.name);
-            setActiveProjectId(shared.id);
-            setIsFullscreen(true);
-
-            // Fetch full data if we're in public view to get the images back
-            if (isPublicView) {
-              fetch(`/api/projects?id=${shared.id}`)
-                .then(r => r.ok ? r.json() : null)
-                .then(full => {
-                  if (full && full.data) {
-                    setProjects(prev => prev.map(p => String(p.id) === String(shared.id) ? { ...p, data: full.data } : p));
-                  }
-                })
-                .catch(console.error);
-            }
-          } else if (isPublicView) {
-            // Try fetching directly from the API if not found in the list (cache issue or new project)
-            const targetId = sharedId || sharedSlug || sharedParam;
-            console.warn("Project not in list, trying direct fetch for ID:", targetId);
-            fetch(`/api/projects?id=${targetId}`)
-              .then(res => res.ok ? res.json() : null)
-              .then(full => {
-                if (full && full.data && Object.keys(full.data).length > 0) {
-                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
-                   setProjects(prev => {
-                     // Check if it was added in the meantime
-                     if (prev.find(p => String(p.id) === String(full.id))) return prev;
-                     return [...prev, newProj];
-                   });
-                   setActiveProjectId(full.id);
-                   setIsFullscreen(true);
-                   setIsNotFound(false);
-                } else {
-                   setIsNotFound(true);
-                }
-              })
-              .catch(err => {
-                console.error("Direct fetch failed:", err);
-                setIsNotFound(true);
-              });
-          } else {
-            setActiveProjectId(saved[0].id);
-          }
-        } else {
-          setActiveProjectId(saved[0].id);
-        }
-      } else {
-        // If it's a public view and we found NO projects, it might still exist
-        if (isPublicView) {
-          const targetId = sharedId || sharedSlug || sharedParam;
-          if (targetId) {
-            fetch(`/api/projects?id=${targetId}`)
-              .then(res => res.ok ? res.json() : null)
-              .then(full => {
-                if (full && full.data && Object.keys(full.data).length > 0) {
-                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
-                   setProjects([newProj]);
-                   setActiveProjectId(full.id);
-                   setIsFullscreen(true);
-                   setIsNotFound(false);
-                } else {
-                   setIsNotFound(true);
-                }
-              })
-              .catch(() => setIsNotFound(true));
-          } else {
-            setIsNotFound(true);
-          }
-        } else if (saved !== null) {
-          setActiveProjectId(defaultProjects[0].id);
-        }
+        setActiveProjectId(saved[0].id);
+      } else if (saved !== null) {
+        setActiveProjectId(defaultProjects[0].id);
       }
       setIsAppLoaded(true);
     }).catch(err => {
-      console.error("Critical loading error:", err);
-      if (isPublicView) {
-          const targetId = sharedId || sharedSlug || sharedParam;
-          if (targetId) {
-            fetch(`/api/projects?id=${targetId}`)
-              .then(res => res.ok ? res.json() : null)
-              .then(full => {
-                if (full && full.data && Object.keys(full.data).length > 0) {
-                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
-                   setProjects([newProj]);
-                   setActiveProjectId(full.id);
-                   setIsFullscreen(true);
-                   setIsNotFound(false);
-                } else {
-                   setIsNotFound(true);
-                }
-              })
-              .catch(() => setIsNotFound(true));
-          } else {
-            setIsNotFound(true);
-          }
-      }
+      console.error("Loading error:", err);
+      setActiveProjectId(defaultProjects[0].id);
       setIsAppLoaded(true);
     });
   }, []);
