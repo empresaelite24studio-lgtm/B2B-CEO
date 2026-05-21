@@ -31,6 +31,31 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
+      const { id: fetchId } = req.query;
+
+      if (fetchId) {
+        const existing = await notion.databases.query({
+          database_id: databaseId,
+          filter: { property: 'ProjectID', rich_text: { equals: fetchId } }
+        });
+        if (existing.results.length === 0) return res.status(404).json({ error: 'Proyecto no encontrado' });
+        
+        const page = existing.results[0];
+        let blocks = [];
+        let cursor;
+        do {
+          const response = await notion.blocks.children.list({ block_id: page.id, start_cursor: cursor });
+          blocks = blocks.concat(response.results);
+          cursor = response.next_cursor;
+        } while (cursor);
+        
+        const fullJsonString = blocks.map(b => b.paragraph?.rich_text.map(t => t.plain_text).join('') || '').join('');
+        let fullData = {};
+        try { fullData = JSON.parse(fullJsonString); } catch(e) {}
+        
+        return res.status(200).json({ id: fetchId, data: fullData });
+      }
+
       // Leer proyectos
       const response = await notion.databases.query({ database_id: databaseId });
       
@@ -86,30 +111,42 @@ export default async function handler(req, res) {
       });
 
       if (existing.results.length > 0) {
-        // Actualizar
-        const pageId = existing.results[0].id;
-        await notion.pages.update({
-          page_id: pageId,
-          properties: {
-            Name: { title: [{ text: { content: safeName } }] },
-            Date: { rich_text: [{ text: { content: safeDate } }] },
-            JSONData: { rich_text: chunks }
-          }
-        });
-        return res.status(200).json({ success: true, action: 'updated' });
-      } else {
-        // Crear nuevo
-        await notion.pages.create({
-          parent: { database_id: databaseId },
-          properties: {
-            Name: { title: [{ text: { content: safeName } }] },
-            ProjectID: { rich_text: [{ text: { content: safeId } }] },
-            Date: { rich_text: [{ text: { content: safeDate } }] },
-            JSONData: { rich_text: chunks }
-          }
-        });
-        return res.status(200).json({ success: true, action: 'created' });
+        // Archivar versión anterior
+        for (const page of existing.results) {
+          await notion.pages.update({ page_id: page.id, archived: true });
+        }
       }
+
+      // Crear nuevo con los datos básicos
+      const newPage = await notion.pages.create({
+        parent: { database_id: databaseId },
+        properties: {
+          Name: { title: [{ text: { content: safeName } }] },
+          ProjectID: { rich_text: [{ text: { content: safeId } }] },
+          Date: { rich_text: [{ text: { content: safeDate } }] },
+          JSONData: { rich_text: chunks }
+        }
+      });
+
+      // Añadir la data completa con imágenes en los bloques
+      const fullJsonString = JSON.stringify(data || {});
+      const blockChunks = [];
+      for (let i = 0; i < fullJsonString.length; i += 2000) {
+        blockChunks.push({
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [{ type: 'text', text: { content: fullJsonString.substring(i, i + 2000) } }] }
+        });
+      }
+
+      for (let i = 0; i < blockChunks.length; i += 100) {
+        await notion.blocks.children.append({
+          block_id: newPage.id,
+          children: blockChunks.slice(i, i + 100)
+        });
+      }
+
+      return res.status(200).json({ success: true, action: existing.results.length > 0 ? 'updated' : 'created' });
     }
 
     if (req.method === 'DELETE') {

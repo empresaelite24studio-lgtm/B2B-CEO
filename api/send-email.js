@@ -22,8 +22,8 @@ export default async function handler(req, res) {
     // Cuerpo del correo
     const mailOptions = {
       from: `"B2B CEO - ${studioName}" <${process.env.SMTP_USER}>`,
-      to: email, // Enviar al correo que llenó el formulario (según requerimiento)
-      bcc: process.env.SMTP_USER, // Opcional: copia oculta al administrador
+      to: process.env.SMTP_USER, // Enviar al administrador con los datos
+      replyTo: email, // Para poder responder fácilmente al cliente
       subject: `Nueva solicitud de contacto - ${brandName}`,
       html: `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9f9f9; padding: 20px; border-radius: 10px;">

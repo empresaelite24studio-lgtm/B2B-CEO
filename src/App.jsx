@@ -976,9 +976,43 @@ export default function App() {
             console.log("Matched project found:", shared.name);
             setActiveProjectId(shared.id);
             setIsFullscreen(true);
+
+            // Fetch full data if we're in public view to get the images back
+            if (isPublicView) {
+              fetch(`/api/projects?id=${shared.id}`)
+                .then(r => r.ok ? r.json() : null)
+                .then(full => {
+                  if (full && full.data) {
+                    setProjects(prev => prev.map(p => String(p.id) === String(shared.id) ? { ...p, data: full.data } : p));
+                  }
+                })
+                .catch(console.error);
+            }
           } else if (isPublicView) {
-            console.error("Project match failed:", { sharedId, sharedSlug, sharedParam });
-            setIsNotFound(true);
+            // Try fetching directly from the API if not found in the list (cache issue or new project)
+            const targetId = sharedId || sharedSlug || sharedParam;
+            console.warn("Project not in list, trying direct fetch for ID:", targetId);
+            fetch(`/api/projects?id=${targetId}`)
+              .then(res => res.ok ? res.json() : null)
+              .then(full => {
+                if (full && full.data && Object.keys(full.data).length > 0) {
+                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
+                   setProjects(prev => {
+                     // Check if it was added in the meantime
+                     if (prev.find(p => String(p.id) === String(full.id))) return prev;
+                     return [...prev, newProj];
+                   });
+                   setActiveProjectId(full.id);
+                   setIsFullscreen(true);
+                   setIsNotFound(false);
+                } else {
+                   setIsNotFound(true);
+                }
+              })
+              .catch(err => {
+                console.error("Direct fetch failed:", err);
+                setIsNotFound(true);
+              });
           } else {
             setActiveProjectId(saved[0].id);
           }
@@ -986,20 +1020,55 @@ export default function App() {
           setActiveProjectId(saved[0].id);
         }
       } else {
-        // If it's a public view and we found NO projects, it's definitely an error
+        // If it's a public view and we found NO projects, it might still exist
         if (isPublicView) {
-          console.error("No projects returned from Notion during public view");
-          setIsNotFound(true);
+          const targetId = sharedId || sharedSlug || sharedParam;
+          if (targetId) {
+            fetch(`/api/projects?id=${targetId}`)
+              .then(res => res.ok ? res.json() : null)
+              .then(full => {
+                if (full && full.data && Object.keys(full.data).length > 0) {
+                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
+                   setProjects([newProj]);
+                   setActiveProjectId(full.id);
+                   setIsFullscreen(true);
+                   setIsNotFound(false);
+                } else {
+                   setIsNotFound(true);
+                }
+              })
+              .catch(() => setIsNotFound(true));
+          } else {
+            setIsNotFound(true);
+          }
         } else if (saved !== null) {
-          // If saved is [], we just show the default
           setActiveProjectId(defaultProjects[0].id);
         }
-        // If saved is null, it means the fetch failed completely
       }
       setIsAppLoaded(true);
     }).catch(err => {
       console.error("Critical loading error:", err);
-      if (isPublicView) setIsNotFound(true);
+      if (isPublicView) {
+          const targetId = sharedId || sharedSlug || sharedParam;
+          if (targetId) {
+            fetch(`/api/projects?id=${targetId}`)
+              .then(res => res.ok ? res.json() : null)
+              .then(full => {
+                if (full && full.data && Object.keys(full.data).length > 0) {
+                   const newProj = { id: full.id, name: full.name || 'Propuesta', date: '', data: full.data };
+                   setProjects([newProj]);
+                   setActiveProjectId(full.id);
+                   setIsFullscreen(true);
+                   setIsNotFound(false);
+                } else {
+                   setIsNotFound(true);
+                }
+              })
+              .catch(() => setIsNotFound(true));
+          } else {
+            setIsNotFound(true);
+          }
+      }
       setIsAppLoaded(true);
     });
   }, []);

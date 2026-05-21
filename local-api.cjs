@@ -12,6 +12,31 @@ const databaseId = process.env.NOTION_DATABASE_ID;
 
 app.get('/api/projects', async (req, res) => {
   try {
+    const { id: fetchId } = req.query;
+
+    if (fetchId) {
+      const existing = await notion.databases.query({
+        database_id: databaseId,
+        filter: { property: 'ProjectID', rich_text: { equals: fetchId } }
+      });
+      if (existing.results.length === 0) return res.status(404).json({ error: 'No encontrado' });
+      
+      const page = existing.results[0];
+      let blocks = [];
+      let cursor;
+      do {
+        const response = await notion.blocks.children.list({ block_id: page.id, start_cursor: cursor });
+        blocks = blocks.concat(response.results);
+        cursor = response.next_cursor;
+      } while (cursor);
+      
+      const fullJsonString = blocks.map(b => b.paragraph?.rich_text.map(t => t.plain_text).join('') || '').join('');
+      let fullData = {};
+      try { fullData = JSON.parse(fullJsonString); } catch(e) {}
+      
+      return res.json({ id: fetchId, data: fullData });
+    }
+
     const response = await notion.databases.query({ database_id: databaseId });
     const projects = response.results.map(page => {
       const properties = page.properties;
@@ -68,25 +93,38 @@ app.post('/api/projects', async (req, res) => {
     });
 
     if (existing.results.length > 0) {
-      await notion.pages.update({
-        page_id: existing.results[0].id,
-        properties: {
-          Name: { title: [{ text: { content: safeName } }] },
-          Date: { rich_text: [{ text: { content: safeDate } }] },
-          JSONData: { rich_text: chunks }
-        }
-      });
-    } else {
-      await notion.pages.create({
-        parent: { database_id: databaseId },
-        properties: {
-          Name: { title: [{ text: { content: safeName } }] },
-          ProjectID: { rich_text: [{ text: { content: safeId } }] },
-          Date: { rich_text: [{ text: { content: safeDate } }] },
-          JSONData: { rich_text: chunks }
-        }
+      for (const page of existing.results) {
+        await notion.pages.update({ page_id: page.id, archived: true });
+      }
+    }
+
+    const newPage = await notion.pages.create({
+      parent: { database_id: databaseId },
+      properties: {
+        Name: { title: [{ text: { content: safeName } }] },
+        ProjectID: { rich_text: [{ text: { content: safeId } }] },
+        Date: { rich_text: [{ text: { content: safeDate } }] },
+        JSONData: { rich_text: chunks }
+      }
+    });
+
+    const fullJsonString = JSON.stringify(data || {});
+    const blockChunks = [];
+    for (let i = 0; i < fullJsonString.length; i += 2000) {
+      blockChunks.push({
+        object: 'block',
+        type: 'paragraph',
+        paragraph: { rich_text: [{ type: 'text', text: { content: fullJsonString.substring(i, i + 2000) } }] }
       });
     }
+
+    for (let i = 0; i < blockChunks.length; i += 100) {
+      await notion.blocks.children.append({
+        block_id: newPage.id,
+        children: blockChunks.slice(i, i + 100)
+      });
+    }
+    
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
