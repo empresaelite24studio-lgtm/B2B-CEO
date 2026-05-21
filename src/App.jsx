@@ -92,11 +92,10 @@ const StorageManager = {
       
       await Promise.all(savePromises);
       
-      // Always save full data (including images) to localStorage as backup
-      localStorage.setItem('b2b-projects-v2', JSON.stringify(projects));
+      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch(e) {}
     } catch (e) {
       console.error("Error saving projects:", e);
-      localStorage.setItem('b2b-projects-v2', JSON.stringify(projects));
+      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch(err) {}
       throw e;
     }
   },
@@ -107,7 +106,8 @@ const StorageManager = {
       if (res.ok) {
         const notionData = await res.json();
         if (notionData && notionData.length > 0) {
-          const local = localStorage.getItem('b2b-projects-v2');
+          let local = null;
+          try { local = localStorage.getItem('b2b-projects-v2'); } catch(e) {}
           const localProjects = local ? JSON.parse(local) : [];
 
           const merged = notionData.map(np => {
@@ -139,7 +139,8 @@ const StorageManager = {
       throw new Error(`Load failed with status ${res.status}`);
     } catch (e) {
       console.error("Error loading from Notion:", e);
-      const local = localStorage.getItem('b2b-projects-v2');
+      let local = null;
+      try { local = localStorage.getItem('b2b-projects-v2'); } catch(err) {}
       return local ? JSON.parse(local) : null;
     }
   },
@@ -219,6 +220,7 @@ const defaultProjects = [
 
 const ImageUploader = ({ value, onChange, className = '' }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const inputRef = React.useRef(null);
 
   const handleDrag = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -261,7 +263,7 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
     <div
       className={`relative w-full h-32 border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer overflow-hidden ${isDragging ? 'border-[var(--brand-primary)] bg-[var(--brand-primary)]/10 scale-[1.02]' : 'border-[#2D1B4E] bg-[#0A0514] hover:border-white/20'} ${className}`}
       onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}
-      onClick={() => document.getElementById(`file-upload-${className}`).click()}
+      onClick={() => inputRef.current?.click()}
     >
       {value ? (
         <>
@@ -277,7 +279,7 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
           <p className="text-white/30 text-[10px] uppercase tracking-widest mt-1">PNG · JPG · WEBP</p>
         </div>
       )}
-      <input id={`file-upload-${className}`} type="file" className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <input ref={inputRef} type="file" className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
     </div>
   );
 };
@@ -1031,6 +1033,8 @@ export default function App() {
     };
 
     const handleWheel = (e) => {
+      if (e.target.closest('aside') || e.target.closest('section')) return;
+      
       const now = Date.now();
       if (now - lastScrollTime.current < 900) return; // Debounce 0.9s
 
