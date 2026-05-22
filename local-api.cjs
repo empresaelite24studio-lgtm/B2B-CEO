@@ -44,14 +44,14 @@ app.get('/api/projects', async (req, res) => {
       let data = {};
       if (blocks.length > 0) {
         const fullJsonString = blocks.map(b => b.paragraph?.rich_text?.map(t => t.plain_text).join('') || '').join('');
-        try { 
-          data = JSON.parse(fullJsonString); 
-        } catch (e) {}
+        try {
+          data = JSON.parse(fullJsonString);
+        } catch (e) { }
       }
 
       if (!data || Object.keys(data).length === 0) {
         const jsonDataRaw = properties.JSONData?.rich_text.map(t => t.plain_text).join('') || '{}';
-        try { data = JSON.parse(jsonDataRaw); } catch (e) {}
+        try { data = JSON.parse(jsonDataRaw); } catch (e) { }
       }
 
       return res.json({ id, name, date, data });
@@ -144,7 +144,7 @@ app.post('/api/projects', async (req, res) => {
         children: blockChunks.slice(i, i + 100)
       });
     }
-    
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -218,6 +218,29 @@ const defaultProjects = [
   }
 ];
 
+// Recursively merge custom target data with default project template to ensure no missing properties/crashes
+function mergeWithDefaults(target, defaults) {
+  if (!target || typeof target !== 'object') return JSON.parse(JSON.stringify(defaults));
+  
+  const result = { ...target };
+  for (const key of Object.keys(defaults)) {
+    if (result[key] === undefined || result[key] === null) {
+      result[key] = JSON.parse(JSON.stringify(defaults[key]));
+    } else if (typeof defaults[key] === 'object' && defaults[key] !== null && !Array.isArray(defaults[key])) {
+      result[key] = mergeWithDefaults(result[key], defaults[key]);
+    }
+  }
+  return result;
+}
+
+function sanitizeProject(proj) {
+  if (!proj) return proj;
+  return {
+    ...proj,
+    data: mergeWithDefaults(proj.data, defaultProjects[0].data)
+  };
+}
+
 const ImageUploader = ({ value, onChange, className = '' }) => {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = React.useRef(null);
@@ -924,7 +947,7 @@ export default function App() {
   });
 
   const activeProject = projects.find(p => p.id === activeProjectId) || projects[0] || defaultProjects[0];
-  const projectData = activeProject.data;
+  const projectData = mergeWithDefaults(activeProject?.data, defaultProjects[0].data);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -950,61 +973,52 @@ export default function App() {
     // ── PUBLIC / SHARED VIEW: fetch the single project directly by ID ──
     if (sharedParam) {
       const targetId = sharedId || sharedSlug || sharedParam;
-      console.log("Public view – fetching project by ID:", targetId);
+      console.log("Public view – fetching project directly by ID:", targetId);
 
-      // Helper: try to find the project in a project list
-      const findInList = (list) => {
-        if (!list || list.length === 0) return null;
-        let found = list.find(p => String(p.id) === String(sharedId));
-        if (!found && sharedSlug) found = list.find(p => p.name && slugify(p.name) === sharedSlug);
-        if (!found) found = list.find(p => String(p.id) === String(sharedParam) || (p.name && slugify(p.name) === sharedParam));
-        return found;
-      };
-
-      // Strategy: fetch the project list from Notion (which works in any browser)
-      // and match the project. This is the same API call that works in normal mode.
-      fetch('/api/projects', { cache: 'no-store' })
+      fetch(`/api/projects?id=${targetId}`, { cache: 'no-store' })
         .then(res => {
-          if (!res.ok) throw new Error(`API error ${res.status}`);
-          return res.json();
-        })
-        .then(allProjects => {
-          console.log("API returned", allProjects?.length || 0, "projects");
-          const found = findInList(allProjects);
-
-          if (found) {
-            console.log("Matched project:", found.name);
-            setProjects(allProjects);
-            setActiveProjectId(found.id);
-            setIsFullscreen(true);
-          } else {
-            console.warn("Project not found in list, trying direct fetch for ID:", targetId);
-            // Fallback: fetch the single project by ID
-            return fetch(`/api/projects?id=${targetId}`)
-              .then(r => r.ok ? r.json() : null)
-              .then(single => {
-                if (single && single.data && Object.keys(single.data).length > 0) {
-                  const proj = { id: single.id, name: single.name || 'Propuesta', date: single.date || '', data: single.data };
-                  setProjects([proj]);
-                  setActiveProjectId(proj.id);
-                  setIsFullscreen(true);
-                } else {
-                  setIsNotFound(true);
-                }
-              });
-          }
-        })
-        .catch(err => {
-          console.error("Failed to load project for public view:", err);
-          // Last resort: try direct single-project fetch
-          fetch(`/api/projects?id=${targetId}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(single => {
+          if (res.ok) {
+            return res.json().then(single => {
               if (single && single.data && Object.keys(single.data).length > 0) {
-                const proj = { id: single.id, name: single.name || 'Propuesta', date: single.date || '', data: single.data };
+                console.log("Loaded shared project:", single.name);
+                const proj = sanitizeProject({ 
+                  id: single.id, 
+                  name: single.name || 'Propuesta', 
+                  date: single.date || '', 
+                  data: single.data 
+                });
                 setProjects([proj]);
                 setActiveProjectId(proj.id);
                 setIsFullscreen(true);
+              } else {
+                throw new Error("No data inside single project response");
+              }
+            });
+          } else {
+            throw new Error(`API error ${res.status}`);
+          }
+        })
+        .catch(err => {
+          console.warn("Shared project not found by direct query, trying list fallback:", err);
+          // Fallback list match
+          return fetch('/api/projects', { cache: 'no-store' })
+            .then(r => r.ok ? r.json() : [])
+            .then(list => {
+              const matched = list.find(p => String(p.id) === String(sharedId) || String(p.id) === String(sharedParam) || (p.name && slugify(p.name) === sharedSlug));
+              if (matched) {
+                // Direct fetch the matched single project to get full image data
+                return fetch(`/api/projects?id=${matched.id}`)
+                  .then(r => r.ok ? r.json() : null)
+                  .then(fullMatched => {
+                    if (fullMatched && fullMatched.data) {
+                      const proj = sanitizeProject({ id: fullMatched.id, name: fullMatched.name, date: fullMatched.date, data: fullMatched.data });
+                      setProjects([proj]);
+                      setActiveProjectId(proj.id);
+                      setIsFullscreen(true);
+                    } else {
+                      setIsNotFound(true);
+                    }
+                  });
               } else {
                 setIsNotFound(true);
               }
@@ -1019,7 +1033,7 @@ export default function App() {
     // ── NORMAL VIEW (admin panel) ──
     StorageManager.load().then((saved) => {
       if (saved && saved.length > 0) {
-        setProjects(saved);
+        setProjects(saved.map(sanitizeProject));
         setActiveProjectId(saved[0].id);
       } else if (saved !== null) {
         setActiveProjectId(defaultProjects[0].id);
@@ -1095,14 +1109,54 @@ export default function App() {
   };
 
   const handleUpdateData = (section, field, value) => {
-    setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, data: { ...p.data, [section]: { ...p.data[section], [field]: value } } } : p));
+    setProjects(prev => prev.map(p => {
+      if (p.id === activeProjectId) {
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        return {
+          ...p,
+          data: {
+            ...currentData,
+            [section]: {
+              ...currentData[section],
+              [field]: value
+            }
+          }
+        };
+      }
+      return p;
+    }));
   };
 
   const handleUpdateNestedData = (section, nestedField, field, value) => {
     setProjects(prev => prev.map(p => {
       if (p.id === activeProjectId) {
-        if (nestedField) return { ...p, data: { ...p.data, [section]: { ...p.data[section], [nestedField]: { ...p.data[section][nestedField], [field]: value } } } };
-        else return { ...p, data: { ...p.data, [section]: { ...p.data[section], [field]: value } } };
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        if (nestedField) {
+          return {
+            ...p,
+            data: {
+              ...currentData,
+              [section]: {
+                ...currentData[section],
+                [nestedField]: {
+                  ...currentData[section]?.[nestedField],
+                  [field]: value
+                }
+              }
+            }
+          };
+        } else {
+          return {
+            ...p,
+            data: {
+              ...currentData,
+              [section]: {
+                ...currentData[section],
+                [field]: value
+              }
+            }
+          };
+        }
       }
       return p;
     }));
@@ -1111,9 +1165,21 @@ export default function App() {
   const handleUpdateVisionCard = (cardIdx, field, value) => {
     setProjects(prev => prev.map(p => {
       if (p.id === activeProjectId) {
-        const newCards = [...p.data.vision.cards];
-        newCards[cardIdx] = { ...newCards[cardIdx], [field]: value };
-        return { ...p, data: { ...p.data, vision: { ...p.data.vision, cards: newCards } } };
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        const newCards = [...(currentData.vision?.cards || [])];
+        if (newCards[cardIdx]) {
+          newCards[cardIdx] = { ...newCards[cardIdx], [field]: value };
+        }
+        return {
+          ...p,
+          data: {
+            ...currentData,
+            vision: {
+              ...currentData.vision,
+              cards: newCards
+            }
+          }
+        };
       }
       return p;
     }));
@@ -1122,9 +1188,18 @@ export default function App() {
   const handleUpdateRender = (renderIdx, field, value) => {
     setProjects(prev => prev.map(p => {
       if (p.id === activeProjectId) {
-        const newRenders = [...p.data.renders];
-        newRenders[renderIdx] = { ...newRenders[renderIdx], [field]: value };
-        return { ...p, data: { ...p.data, renders: newRenders } };
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        const newRenders = [...(currentData.renders || [])];
+        if (newRenders[renderIdx]) {
+          newRenders[renderIdx] = { ...newRenders[renderIdx], [field]: value };
+        }
+        return {
+          ...p,
+          data: {
+            ...currentData,
+            renders: newRenders
+          }
+        };
       }
       return p;
     }));
@@ -1200,9 +1275,12 @@ export default function App() {
 
   const handleAddRender = () => {
     setProjects(prev => prev.map(p => {
-      if (p.id === activeProjectId && p.data.renders.length < 7) {
-        const newRenders = [...p.data.renders, { id: Date.now(), imgUrl: '', subtitle: 'Nuevo espacio estratégico' }];
-        return { ...p, data: { ...p.data, renders: newRenders } };
+      if (p.id === activeProjectId) {
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        if (currentData.renders.length < 7) {
+          const newRenders = [...currentData.renders, { id: Date.now(), imgUrl: '', subtitle: 'Nuevo espacio estratégico' }];
+          return { ...p, data: { ...currentData, renders: newRenders } };
+        }
       }
       return p;
     }));
@@ -1210,9 +1288,12 @@ export default function App() {
 
   const handleRemoveRender = (renderIdx) => {
     setProjects(prev => prev.map(p => {
-      if (p.id === activeProjectId && p.data.renders.length > 1) {
-        const newRenders = p.data.renders.filter((_, i) => i !== renderIdx);
-        return { ...p, data: { ...p.data, renders: newRenders } };
+      if (p.id === activeProjectId) {
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        if (currentData.renders.length > 1) {
+          const newRenders = currentData.renders.filter((_, i) => i !== renderIdx);
+          return { ...p, data: { ...currentData, renders: newRenders } };
+        }
       }
       return p;
     }));
@@ -1221,9 +1302,18 @@ export default function App() {
   const handleUpdatePillar = (idx, field, value) => {
     setProjects(prev => prev.map(p => {
       if (p.id === activeProjectId) {
-        const newPillars = [...p.data.pillars];
-        newPillars[idx] = { ...newPillars[idx], [field]: value };
-        return { ...p, data: { ...p.data, pillars: newPillars } };
+        const currentData = mergeWithDefaults(p.data, defaultProjects[0].data);
+        const newPillars = [...(currentData.pillars || [])];
+        if (newPillars[idx]) {
+          newPillars[idx] = { ...newPillars[idx], [field]: value };
+        }
+        return {
+          ...p,
+          data: {
+            ...currentData,
+            pillars: newPillars
+          }
+        };
       }
       return p;
     }));
