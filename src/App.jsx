@@ -502,7 +502,7 @@ const HeroSlide = ({ data, onNext, onPrev }) => {
         )}
       </div>
 
-      <header className="absolute top-0 w-full p-10 flex justify-between items-center z-40">
+      <header className="absolute top-0 w-full p-6 md:p-10 flex flex-col sm:flex-row justify-between items-center z-40 gap-4">
         <div className="text-[10px] tracking-[0.4em] uppercase text-white/50 font-bold">{studio.name}</div>
         <div className="flex items-center gap-6">
           {studio.logoUrl && <img src={studio.logoUrl} alt="Studio" className="h-10 object-contain drop-shadow-[0_0_10px_rgba(255,255,255,0.2)]" />}
@@ -511,12 +511,12 @@ const HeroSlide = ({ data, onNext, onPrev }) => {
         </div>
       </header>
 
-      <main className="relative z-40 w-full max-w-4xl text-center px-8">
+      <main className="relative z-40 w-full max-w-4xl text-center px-6 md:px-8">
         <span className="inline-block px-6 py-2 border border-white/20 rounded-full text-[10px] font-bold tracking-[0.3em] uppercase mb-10 text-white/90 backdrop-blur-md bg-black/40 shadow-[0_0_20px_var(--brand-primary)] border-[var(--brand-primary)]">
           {hero.badge}
         </span>
         <h1
-          className="text-5xl md:text-7xl font-light tracking-tight leading-tight mb-12 ceo-text"
+          className="text-4xl md:text-7xl font-light tracking-tight leading-tight mb-12 ceo-text"
           dangerouslySetInnerHTML={{ __html: hero.titleHtml }}
         />
         <div className="text-[10px] tracking-[0.4em] uppercase text-[var(--brand-primary)] font-bold mb-16 drop-shadow-[0_0_8px_var(--brand-primary)]">
@@ -534,7 +534,7 @@ const HeroSlide = ({ data, onNext, onPrev }) => {
 
 const ManifestoSlide = ({ data }) => {
   return (
-    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
+    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-y-auto md:overflow-hidden bg-[#020105] text-white px-6 md:px-20 py-20 md:py-0 custom-scrollbar">
       <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-20 mix-blend-overlay"></div>
         <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[200px] mix-blend-screen opacity-10 animate-pulse-glow"></div>
@@ -544,11 +544,11 @@ const ManifestoSlide = ({ data }) => {
       <div className="relative z-10 w-full max-w-[1200px] grid grid-cols-1 md:grid-cols-12 gap-10 items-center">
         <div className="md:col-span-7">
           <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.2 }}>
-            <h2 className="text-5xl md:text-6xl font-bold tracking-tight text-white mb-4 leading-[1.1]">
+            <h2 className="text-4xl md:text-6xl font-bold tracking-tight text-white mb-4 leading-[1.1]">
               Esto no es una propuesta <span className="font-serif italic font-light text-white/30">comercial.</span>
             </h2>
             <div className="h-[2px] w-24 bg-[var(--brand-primary)] shadow-[0_0_15px_var(--brand-primary)] my-8"></div>
-            <p className="text-2xl md:text-3xl font-light text-white/80 leading-relaxed max-w-2xl">
+            <p className="text-xl md:text-3xl font-light text-white/80 leading-relaxed max-w-2xl">
               Es el inicio de una <span className="text-white font-medium drop-shadow-[0_0_15px_var(--brand-primary)] ceo-text"><b>conversación estratégica.</b></span>
             </p>
           </motion.div>
@@ -583,12 +583,12 @@ const ManifestoSlide = ({ data }) => {
 const CeoSlide = ({ data }) => {
   const { ceoInvitation, studio } = data;
   return (
-    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
+    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-y-auto md:overflow-hidden bg-[#020105] text-white px-6 md:px-20 py-20 md:py-0 custom-scrollbar">
       <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
         <div className="w-[80vw] h-[80vh] bg-[var(--brand-primary)] blur-[180px] mix-blend-screen opacity-15"></div>
       </div>
 
-      <div className="relative z-10 w-full max-w-[1100px] grid grid-cols-1 md:grid-cols-12 gap-16 items-center">
+      <div className="relative z-10 w-full max-w-[1100px] grid grid-cols-1 md:grid-cols-12 gap-8 md:gap-16 items-center mt-12 md:mt-0">
         <div className="md:col-span-5 flex justify-center relative">
           <div className="relative w-full max-w-[380px] aspect-[4/5] rounded-2xl p-1 overflow-hidden group shadow-[0_0_50px_rgba(0,0,0,0.5)]">
             <div className="absolute inset-[-50%] bg-[conic-gradient(from_0deg,transparent_0%,var(--brand-primary)_50%,transparent_100%)] animate-spin-slow opacity-100"></div>
@@ -625,11 +625,11 @@ const CeoSlide = ({ data }) => {
 
           <div className="h-[1px] w-full bg-gradient-to-r from-[var(--brand-primary)] to-transparent opacity-30 mb-10"></div>
 
-          <div className="grid grid-cols-3 gap-6">
+          <div className="grid grid-cols-3 sm:grid-cols-3 gap-4 md:gap-6">
             {[ceoInvitation.metric1, ceoInvitation.metric2, ceoInvitation.metric3].map((metric, index) => (
               <motion.div key={index} className="relative group cursor-default">
                 <motion.div
-                  className="text-4xl md:text-5xl font-bold mb-2 text-white/80 transition-all duration-300 drop-shadow-md"
+                  className="text-3xl md:text-5xl font-bold mb-2 text-white/80 transition-all duration-300 drop-shadow-md"
                   animate={{ scale: [1, 1.05, 1], textShadow: ["0px 0px 0px transparent", "0px 0px 20px var(--brand-primary)", "0px 0px 0px transparent"], color: ["#ccc", "var(--brand-primary)", "#ccc"] }}
                   transition={{ duration: 4, repeat: Infinity, delay: index * 1.2, ease: "easeInOut" }}
                 >
@@ -654,7 +654,7 @@ const VisionSlide = ({ data }) => {
   const { vision } = data;
 
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#05010A] text-white px-20">
+    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#05010A] text-white px-6 md:px-20 py-10 md:py-0">
       <div className="absolute inset-0 z-0 flex items-center justify-center opacity-30 pointer-events-none">
         <div className="w-[80vw] h-[80vh] bg-[var(--brand-primary)] blur-[150px] rounded-full mix-blend-screen opacity-20"></div>
       </div>
@@ -681,7 +681,7 @@ const VisionSlide = ({ data }) => {
           </motion.p>
         </div>
 
-        <div className="flex h-[45vh] min-h-[350px] w-full gap-3 overflow-hidden p-2">
+        <div className="flex flex-col md:flex-row h-[65vh] md:h-[45vh] min-h-[350px] w-full gap-3 overflow-y-auto md:overflow-hidden p-2 custom-scrollbar">
           {vision.cards.map((card, idx) => {
             const isActive = activeCard === idx;
             return (
@@ -702,7 +702,7 @@ const VisionSlide = ({ data }) => {
                 <div className="absolute bottom-0 left-0 w-full h-full p-6 md:p-8 flex flex-col justify-end">
                   {!isActive && (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="origin-center -rotate-90 text-[10px] md:text-xs font-bold tracking-[0.3em] uppercase text-white whitespace-nowrap">
+                      <span className="origin-center md:-rotate-90 text-[10px] md:text-xs font-bold tracking-[0.3em] uppercase text-white whitespace-nowrap">
                         0{idx + 1} · {card.title}
                       </span>
                     </div>
@@ -729,7 +729,7 @@ const VisionSlide = ({ data }) => {
 
 const ExecutiveProcessSlide = () => {
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#05010A] text-white px-8 md:px-20">
+    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-y-auto md:overflow-hidden bg-[#05010A] text-white px-6 md:px-20 py-20 md:py-0 custom-scrollbar">
       <div className="absolute inset-0 z-0 flex items-center justify-center opacity-30 pointer-events-none">
         <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[200px] rounded-full mix-blend-screen opacity-10"></div>
       </div>
@@ -754,7 +754,7 @@ const ExecutiveProcessSlide = () => {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.8, delay: 0.2 }}
-          className="bg-white/5 border border-white/10 rounded-2xl p-8 md:p-12 backdrop-blur-md shadow-2xl relative overflow-hidden"
+          className="bg-white/5 border border-white/10 rounded-2xl p-6 md:p-12 backdrop-blur-md shadow-2xl relative overflow-hidden"
         >
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--brand-primary)] to-transparent"></div>
           <h3 className="text-xl md:text-2xl font-bold text-white mb-4 tracking-wide ceo-text">
@@ -827,8 +827,8 @@ const RendersSlide = ({ data, activeIndex, onIndexChange }) => {
             <div
               key={render.id}
               onClick={() => { if (!isActive) onIndexChange(idx); }}
-              className={`absolute transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] cursor-pointer ${isActive ? 'shadow-[0_0_50px_var(--brand-primary)]' : ''}`}
-              style={{ transform: `translateX(${translateX}px) translateZ(${translateZ}px) rotateY(${rotateY}deg)`, opacity, zIndex, width: '65vw', maxWidth: '900px', aspectRatio: '16/9' }}
+              className={`absolute transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] cursor-pointer w-[85vw] md:w-[65vw] max-w-[900px] aspect-video ${isActive ? 'shadow-[0_0_50px_var(--brand-primary)]' : ''}`}
+              style={{ transform: `translateX(${translateX}px) translateZ(${translateZ}px) rotateY(${rotateY}deg)`, opacity, zIndex }}
             >
               <div className="w-full h-full rounded-2xl overflow-hidden border border-white/10 relative bg-[#110822] flex items-center justify-center">
                 {render.imgUrl ? (
@@ -858,8 +858,8 @@ const RendersSlide = ({ data, activeIndex, onIndexChange }) => {
 
       {renders.length > 1 && (
         <>
-          <div className="absolute bottom-1/2 left-8 z-30"><button onClick={() => onIndexChange((safeIndex - 1 + renders.length) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronLeft /></button></div>
-          <div className="absolute bottom-1/2 right-8 z-30"><button onClick={() => onIndexChange((safeIndex + 1) % renders.length)} className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronRight /></button></div>
+          <div className="absolute bottom-1/2 left-4 md:left-8 z-30"><button onClick={() => onIndexChange((safeIndex - 1 + renders.length) % renders.length)} className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronLeft size={16} className="md:w-6 md:h-6" /></button></div>
+          <div className="absolute bottom-1/2 right-4 md:right-8 z-30"><button onClick={() => onIndexChange((safeIndex + 1) % renders.length)} className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white hover:bg-[var(--brand-primary)] transition-colors"><ChevronRight size={16} className="md:w-6 md:h-6" /></button></div>
         </>
       )}
       <footer className="absolute bottom-8 w-full flex justify-center text-[9px] tracking-[0.4em] uppercase text-white/40 font-bold z-10 pointer-events-none">CAPÍTULO &nbsp;&nbsp; 05 / 08</footer>
@@ -872,7 +872,7 @@ const ReminderSlide = ({ data }) => {
   const processedHtml = reminder.htmlText.replace(/{{brandName}}/g, brand.name);
 
   return (
-    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
+    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-6 md:px-20">
       <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-30 mix-blend-overlay"></div>
         <div className="w-[80vw] h-[80vh] bg-[var(--brand-primary)] blur-[250px] mix-blend-screen opacity-15"></div>
@@ -900,7 +900,7 @@ const PillarsSlide = ({ data }) => {
   const icons = [<Hexagon />, <Sparkles />, <Map />, <Users />, <Sun />, <Leaf />];
 
   return (
-    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
+    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-y-auto md:overflow-hidden bg-[#020105] text-white px-6 md:px-20 py-24 md:py-0 custom-scrollbar">
       <div className="absolute inset-0 z-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-10 mix-blend-overlay"></div>
 
       <div className="text-center mb-16 relative z-10">
@@ -908,7 +908,7 @@ const PillarsSlide = ({ data }) => {
         <h2 className="text-4xl font-light text-white ceo-text">Arquitectura de Experiencia</h2>
       </div>
 
-      <div className="relative z-10 w-full max-w-6xl grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="relative z-10 w-full max-w-6xl grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {pillars.map((pillar, idx) => (
           <div key={pillar.id} className="group relative bg-[#0A0514] border border-[#2D1B4E] rounded-2xl p-8 hover:border-[var(--brand-primary)] transition-all duration-500 overflow-hidden cursor-default">
             <div className="absolute inset-0 bg-[var(--brand-primary)] opacity-0 group-hover:opacity-5 transition-opacity duration-500"></div>
@@ -977,7 +977,7 @@ const CtaSlide = ({ data, onRestart }) => {
   };
 
   return (
-    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-hidden bg-[#020105] text-white px-20">
+    <div className="relative w-full h-full flex flex-col justify-center items-center overflow-y-auto md:overflow-hidden bg-[#020105] text-white px-6 md:px-20 py-24 md:py-0 custom-scrollbar">
       <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
         <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[250px] mix-blend-screen opacity-10"></div>
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-30 mix-blend-overlay"></div>
@@ -1023,7 +1023,7 @@ const CtaSlide = ({ data, onRestart }) => {
               </div>
 
               <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <input type="text" placeholder="Nombre" required value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
                   <input type="text" placeholder="Cargo" required value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
                 </div>
@@ -1767,7 +1767,7 @@ export default function App() {
 
       <main className={`relative bg-black overflow-hidden flex flex-col transition-all duration-500 ease-in-out ${isFullscreen || isPublicView ? 'fixed inset-0 z-[9999] w-screen h-screen' : 'flex-1'}`}>
         <header className="absolute top-0 w-full p-4 flex justify-end gap-3 z-50 pointer-events-none">
-          <div className="pointer-events-auto flex gap-3">
+          <div className="pointer-events-auto flex gap-2 md:gap-3 flex-wrap justify-end">
             {isPublicView ? (
               <motion.div
                 initial={{ opacity: 0, y: -20 }}
