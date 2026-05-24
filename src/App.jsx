@@ -242,7 +242,7 @@ function sanitizeProject(proj) {
 }
 
 
-const IMGBB_API_KEY = 'dc218e4a09b67cd8cff2c82ece54542f';
+const IMGBB_API_KEY = 'c12b5cb898abf759e8f1df7b527bf7d4';
 
 // =====================================
 // SUBIR A IMGBB
