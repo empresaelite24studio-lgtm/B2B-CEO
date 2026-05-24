@@ -76,21 +76,12 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-// Strip base64 data URLs so project data fits in Notion's 200KB rich_text limit
+// ============================================
+// FUNCIÓN MODIFICADA - YA NO BORRA LAS IMÁGENES
+// ============================================
+// Ahora las imágenes son URLs de PicDB (https://picdb.me/...)
+// No necesitamos borrar nada, solo devolver el objeto intacto
 function stripBase64Images(obj) {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') {
-    if (obj.startsWith('data:image/')) return '';
-    return obj;
-  }
-  if (Array.isArray(obj)) return obj.map(stripBase64Images);
-  if (typeof obj === 'object') {
-    const result = {};
-    for (const key of Object.keys(obj)) {
-      result[key] = stripBase64Images(obj[key]);
-    }
-    return result;
-  }
   return obj;
 }
 
@@ -145,8 +136,10 @@ app.post('/api/projects', async (req, res) => {
       });
     }
 
+    console.log('✅ Proyecto guardado en Notion');
     res.json({ success: true });
   } catch (error) {
+    console.error('❌ Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -216,5 +209,6 @@ app.post('/api/send-email', async (req, res) => {
 });
 
 app.listen(3001, () => {
-  console.log('Local API running on http://localhost:3001');
+  console.log('✅ API corriendo en http://localhost:3001');
+  console.log('📸 PicDB integrado - Las imágenes se guardan como URLs');
 });

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Plus, Copy, Trash2, Edit2, ChevronLeft, ChevronRight, 
+import {
+  Plus, Copy, Trash2, Edit2, ChevronLeft, ChevronRight,
   UploadCloud, Maximize, Minimize, Download, CheckCircle,
   Hexagon, Sparkles, Map, Users, Sun, Leaf, Share2, Save,
   RefreshCcw
@@ -89,13 +89,13 @@ const StorageManager = {
           return false;
         }
       });
-      
+
       await Promise.all(savePromises);
-      
-      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch(e) {}
+
+      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch (e) { }
     } catch (e) {
       console.error("Error saving projects:", e);
-      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch(err) {}
+      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch (err) { }
       throw e;
     }
   },
@@ -107,14 +107,14 @@ const StorageManager = {
         const notionData = await res.json();
         if (notionData && notionData.length > 0) {
           let local = null;
-          try { local = localStorage.getItem('b2b-projects-v2'); } catch(e) {}
+          try { local = localStorage.getItem('b2b-projects-v2'); } catch (e) { }
           const localProjects = local ? JSON.parse(local) : [];
 
           const merged = notionData.map(np => {
-            const localMatch = localProjects.find(lp => 
+            const localMatch = localProjects.find(lp =>
               String(lp.id) === String(np.id) || (lp.name && np.name && slugify(lp.name) === slugify(np.name))
             );
-            
+
             if (localMatch && np.data) {
               return {
                 id: np.id,
@@ -123,7 +123,7 @@ const StorageManager = {
                 data: mergeProjectData(np.data, localMatch.data)
               };
             }
-            
+
             return {
               id: np.id,
               name: np.name,
@@ -131,7 +131,7 @@ const StorageManager = {
               data: np.data || {}
             };
           });
-          
+
           return merged;
         }
         return []; // Return empty array if Notion is empty but response was OK
@@ -140,7 +140,7 @@ const StorageManager = {
     } catch (e) {
       console.error("Error loading from Notion:", e);
       let local = null;
-      try { local = localStorage.getItem('b2b-projects-v2'); } catch(err) {}
+      try { local = localStorage.getItem('b2b-projects-v2'); } catch (err) { }
       return local ? JSON.parse(local) : null;
     }
   },
@@ -161,7 +161,7 @@ const StorageManager = {
 function mergeProjectData(notionData, localData) {
   if (!localData) return notionData;
   if (!notionData) return localData;
-  
+
   const result = { ...notionData };
   for (const key of Object.keys(result)) {
     if (typeof result[key] === 'string' && result[key] === '' && localData[key] && typeof localData[key] === 'string' && localData[key].startsWith('data:image/')) {
@@ -221,7 +221,7 @@ const defaultProjects = [
 // Recursively merge custom target data with default project template to ensure no missing properties/crashes
 function mergeWithDefaults(target, defaults) {
   if (!target || typeof target !== 'object') return JSON.parse(JSON.stringify(defaults));
-  
+
   const result = { ...target };
   for (const key of Object.keys(defaults)) {
     if (result[key] === undefined || result[key] === null) {
@@ -243,7 +243,26 @@ function sanitizeProject(proj) {
 
 const ImageUploader = ({ value, onChange, className = '' }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const inputRef = React.useRef(null);
+
+  // NUEVA FUNCIÓN: Subir imagen a PicDB
+  const uploadToPicDB = async (file) => {
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const response = await fetch('https://picdb.me/api/upload', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Error ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.url; // Ejemplo: "https://picdb.me/i/abc123.jpg"
+  };
 
   const handleDrag = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -257,42 +276,50 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
   };
 
-  const handleFile = (file) => {
+  const handleFile = async (file) => {  // ← AHORA ES async
     if (!file.type.match('image.*')) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        const MAX_SIZE = 1920; // Alta calidad (1080p), perfecto para renders a pantalla completa
-        if (width > height && width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
-        else if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        // WebP 0.85 mantiene calidad cristalina y optimiza el tamaño de la cadena base64
-        const outputType = 'image/webp';
-        const quality = 0.85;
-        onChange(canvas.toDataURL(outputType, quality));
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+
+    setIsUploading(true);  // ← MUESTRA INDICADOR DE CARGA
+
+    try {
+      const imageUrl = await uploadToPicDB(file);  // ← SUbe a PicDB
+      onChange(imageUrl);  // ← Guarda la URL (no base64)
+      console.log('✅ Imagen subida a PicDB:', imageUrl);
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al subir la imagen. Intenta de nuevo.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (
     <div
       className={`relative w-full h-32 border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer overflow-hidden ${isDragging ? 'border-[var(--brand-primary)] bg-[var(--brand-primary)]/10 scale-[1.02]' : 'border-[#2D1B4E] bg-[#0A0514] hover:border-white/20'} ${className}`}
-      onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}
-      onClick={() => inputRef.current?.click()}
+      onDragEnter={handleDrag}
+      onDragLeave={handleDrag}
+      onDragOver={handleDrag}
+      onDrop={handleDrop}
+      onClick={() => !isUploading && inputRef.current?.click()}
     >
+      {/* INDICADOR DE CARGA MIENTRAS SUBE A PICDB */}
+      {isUploading && (
+        <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-10 rounded-xl">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
+            <p className="text-white text-xs font-bold">Subiendo a la nube...</p>
+            <p className="text-white/40 text-[10px] mt-1">PicDB 📸</p>
+          </div>
+        </div>
+      )}
+
       {value ? (
         <>
           <img src={value} alt="Preview" className="w-full h-full object-contain p-2 opacity-80" />
           <div className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 hover:opacity-100 transition-opacity">
-            <span className="text-white text-xs font-bold tracking-widest uppercase flex items-center gap-2"><UploadCloud size={16} /> Cambiar</span>
+            <span className="text-white text-xs font-bold tracking-widest uppercase flex items-center gap-2">
+              <UploadCloud size={16} /> Cambiar
+            </span>
           </div>
         </>
       ) : (
@@ -302,7 +329,13 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
           <p className="text-white/30 text-[10px] uppercase tracking-widest mt-1">PNG · JPG · WEBP</p>
         </div>
       )}
-      <input ref={inputRef} type="file" className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        accept="image/*"
+        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+      />
     </div>
   );
 };
@@ -583,9 +616,9 @@ const VisionSlide = ({ data }) => {
           <p className="text-white/50 max-w-2xl mx-auto text-[11px] tracking-widest leading-relaxed uppercase">
             {vision.description}
           </p>
-          <motion.p 
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: [0.4, 0.8, 0.4] }} 
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0.4, 0.8, 0.4] }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
             className="mt-6 text-[9px] text-[var(--brand-primary)] tracking-[0.3em] font-bold uppercase"
           >
@@ -795,7 +828,7 @@ const PillarsSlide = ({ data }) => {
 const CtaSlide = ({ data, onRestart }) => {
   const [step, setStep] = useState('initial');
   const [formData, setFormData] = useState({ name: '', role: '', email: '', whatsapp: '' });
-  
+
   // Extraemos datos con seguridad absoluta
   const brandName = data?.brand?.name || 'la marca';
   const ctaQuote = data?.ctaFinal?.quote || 'El futuro comienza hoy.';
@@ -810,7 +843,7 @@ const CtaSlide = ({ data, onRestart }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setStep('sending');
-    
+
     try {
       const response = await fetch('/api/send-email', {
         method: 'POST',
@@ -856,16 +889,16 @@ const CtaSlide = ({ data, onRestart }) => {
                 "{ctaQuote}"
               </motion.h2>
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="text-sm md:text-lg text-white/60 font-light max-w-2xl mx-auto leading-relaxed mb-12" dangerouslySetInnerHTML={{ __html: processedHtml }} />
-              
+
               <div className="flex flex-col gap-5 items-center">
-                <button 
-                  onClick={() => setStep('form')} 
+                <button
+                  onClick={() => setStep('form')}
                   className="px-12 py-5 rounded-full text-white text-xs font-bold tracking-[0.2em] uppercase transition-all duration-300 hover:scale-105 border border-[var(--brand-primary)] bg-[var(--brand-primary)]/20 backdrop-blur-md flex items-center gap-3 shadow-[0_0_30px_rgba(138,5,190,0.2)]"
                 >
                   QUIERO AGENDAR REUNIÓN <ChevronRight size={16} />
                 </button>
-                
-                <button 
+
+                <button
                   onClick={onRestart}
                   className="px-10 py-4 rounded-full border border-white/20 text-white text-[10px] font-bold tracking-[0.2em] uppercase hover:bg-white/10 transition-all flex items-center gap-2"
                 >
@@ -881,15 +914,15 @@ const CtaSlide = ({ data, onRestart }) => {
                 <h3 className="text-2xl font-bold text-white mb-2">Construyamos el futuro</h3>
                 <p className="text-[10px] text-[var(--brand-primary)] uppercase tracking-widest font-bold">Respuesta en menos de 48 horas</p>
               </div>
-              
+
               <div className="space-y-6">
                 <div className="grid grid-cols-2 gap-4">
-                  <input type="text" placeholder="Nombre" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
-                  <input type="text" placeholder="Cargo" required value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                  <input type="text" placeholder="Nombre" required value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                  <input type="text" placeholder="Cargo" required value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
                 </div>
-                <input type="email" placeholder="Email corporativo" required value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
-                <input type="tel" placeholder="WhatsApp" required value={formData.whatsapp} onChange={e => setFormData({...formData, whatsapp: e.target.value})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
-                
+                <input type="email" placeholder="Email corporativo" required value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+                <input type="tel" placeholder="WhatsApp" required value={formData.whatsapp} onChange={e => setFormData({ ...formData, whatsapp: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-[var(--brand-primary)] outline-none transition-all" />
+
                 <div className="flex gap-4 pt-4">
                   <button type="button" onClick={() => setStep('initial')} className="px-6 py-4 rounded-xl border border-white/10 text-white/40 text-xs font-bold uppercase">Volver</button>
                   <button type="submit" className="flex-1 py-4 rounded-xl bg-[var(--brand-primary)] text-white text-xs font-bold tracking-[0.2em] uppercase shadow-[0_0_20px_rgba(138,5,190,0.4)]">Enviar Solicitud</button>
@@ -981,11 +1014,11 @@ export default function App() {
             return res.json().then(single => {
               if (single && single.data && Object.keys(single.data).length > 0) {
                 console.log("Loaded shared project:", single.name);
-                const proj = sanitizeProject({ 
-                  id: single.id, 
-                  name: single.name || 'Propuesta', 
-                  date: single.date || '', 
-                  data: single.data 
+                const proj = sanitizeProject({
+                  id: single.id,
+                  name: single.name || 'Propuesta',
+                  date: single.date || '',
+                  data: single.data
                 });
                 setProjects([proj]);
                 setActiveProjectId(proj.id);
@@ -1076,7 +1109,7 @@ export default function App() {
 
     const handleWheel = (e) => {
       if (e.target.closest('aside') || e.target.closest('section')) return;
-      
+
       const now = Date.now();
       if (now - lastScrollTime.current < 900) return; // Debounce 0.9s
 
@@ -1089,7 +1122,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('wheel', handleWheel, { passive: false });
-    
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('wheel', handleWheel);
@@ -1207,7 +1240,7 @@ export default function App() {
 
   const handleExportHtml = () => {
     const brandName = projectData.brand.name || 'Proyecto';
-    
+
     const htmlContent = `
 <!DOCTYPE html>
 <html lang="es">
@@ -1372,12 +1405,12 @@ export default function App() {
     if (!isPublicView) {
       await handleSaveChanges();
     }
-    
+
     // Format: /c/nombre-del-proyecto--ID
     // Slug gives readability & trust, ID ensures reliable matching
     const slug = slugify(activeProject.name);
     const url = `${window.location.origin}/c/${slug}--${activeProject.id}`;
-    
+
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(url.toString()).then(() => {
         setIsCopied(true);
@@ -1410,7 +1443,7 @@ export default function App() {
         </div>
         <h2 className="text-3xl font-bold mb-4 uppercase tracking-tighter">Propuesta no encontrada</h2>
         <p className="text-white/50 max-w-md text-sm leading-relaxed mb-8">
-          Lo sentimos, el enlace al que intentas acceder no existe o ha sido movido. 
+          Lo sentimos, el enlace al que intentas acceder no existe o ha sido movido.
           Por favor, contacta a tu asesor de ELITE 24 STUDIO.
         </p>
         <a href="https://elite24studio.com.co/" className="px-8 py-3 rounded-full bg-white/5 border border-white/10 text-xs font-bold uppercase tracking-widest hover:bg-white/10 transition-all">
@@ -1485,10 +1518,10 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="Portada (Hero)" badge="1" isOpen={activeAccordion === 'hero'} onClick={() => { 
+            <Accordion title="Portada (Hero)" badge="1" isOpen={activeAccordion === 'hero'} onClick={() => {
               const next = activeAccordion === 'hero' ? null : 'hero';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(0); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(0);
             }}>
               <div className="space-y-4">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Badge superior</label><input type="text" value={projectData.hero.badge} onChange={e => handleUpdateData('hero', 'badge', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-xs text-white" /></div>
@@ -1496,10 +1529,10 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="Invitación CEO" badge="2" isOpen={activeAccordion === 'ceo'} onClick={() => { 
+            <Accordion title="Invitación CEO" badge="2" isOpen={activeAccordion === 'ceo'} onClick={() => {
               const next = activeAccordion === 'ceo' ? null : 'ceo';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(2); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(2);
             }}>
               <div className="space-y-6">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cuerpo del saludo (HTML)</label><textarea value={projectData.ceoInvitation.htmlMessage} onChange={e => handleUpdateData('ceoInvitation', 'htmlMessage', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
@@ -1508,10 +1541,10 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="Visión conceptual" badge="3" isOpen={activeAccordion === 'vision'} onClick={() => { 
+            <Accordion title="Visión conceptual" badge="3" isOpen={activeAccordion === 'vision'} onClick={() => {
               const next = activeAccordion === 'vision' ? null : 'vision';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(3); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(3);
             }}>
               <div className="space-y-6">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Título (HTML)</label><textarea value={projectData.vision.titleHtml} onChange={e => handleUpdateNestedData('vision', null, 'titleHtml', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[#8A05BE] outline-none min-h-[80px] custom-scrollbar" /></div>
@@ -1530,9 +1563,9 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title={`Renders del proyecto (${projectData.renders?.length || 0})`} badge="4" isOpen={activeAccordion === 'renders'} onClick={() => { 
+            <Accordion title={`Renders del proyecto (${projectData.renders?.length || 0})`} badge="4" isOpen={activeAccordion === 'renders'} onClick={() => {
               const next = activeAccordion === 'renders' ? null : 'renders';
-              setActiveAccordion(next); 
+              setActiveAccordion(next);
               if (next) { setCurrentSlide(4); setRenderIndex(0); }
             }}>
               <div className="space-y-4">
@@ -1554,20 +1587,20 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="Recordatorio" badge="5" isOpen={activeAccordion === 'reminder'} onClick={() => { 
+            <Accordion title="Recordatorio" badge="5" isOpen={activeAccordion === 'reminder'} onClick={() => {
               const next = activeAccordion === 'reminder' ? null : 'reminder';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(5); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(5);
             }}>
               <div className="space-y-4">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo (HTML)</label><textarea value={projectData.reminder.htmlText} onChange={e => handleUpdateData('reminder', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
               </div>
             </Accordion>
 
-            <Accordion title={`Pilares (${projectData.pillars?.length || 0} cards)`} badge="6" isOpen={activeAccordion === 'pillars'} onClick={() => { 
+            <Accordion title={`Pilares (${projectData.pillars?.length || 0} cards)`} badge="6" isOpen={activeAccordion === 'pillars'} onClick={() => {
               const next = activeAccordion === 'pillars' ? null : 'pillars';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(6); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(6);
             }}>
               <div className="space-y-4">
                 {projectData.pillars.map((pillar, idx) => (
@@ -1580,10 +1613,10 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="CTA Final" badge="7" isOpen={activeAccordion === 'cta'} onClick={() => { 
+            <Accordion title="CTA Final" badge="7" isOpen={activeAccordion === 'cta'} onClick={() => {
               const next = activeAccordion === 'cta' ? null : 'cta';
-              setActiveAccordion(next); 
-              if (next) setCurrentSlide(7); 
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(7);
             }}>
               <div className="space-y-6">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cita destacada</label><input type="text" value={projectData.ctaFinal.quote} onChange={e => handleUpdateData('ctaFinal', 'quote', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
@@ -1613,7 +1646,7 @@ export default function App() {
         <header className="absolute top-0 w-full p-4 flex justify-end gap-3 z-50 pointer-events-none">
           <div className="pointer-events-auto flex gap-3">
             {isPublicView ? (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="flex items-center gap-4 bg-black/40 backdrop-blur-xl px-6 py-2.5 rounded-full border border-white/10 shadow-2xl mr-4 mt-2"
