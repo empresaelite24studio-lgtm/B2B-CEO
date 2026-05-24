@@ -241,28 +241,37 @@ function sanitizeProject(proj) {
   };
 }
 
+
+const IMGBB_API_KEY = 'dc218e4a09b67cd8cff2c82ece54542f';
+
+// =====================================
+// SUBIR A IMGBB
+// =====================================
+const uploadToImgBB = async (blob) => {
+  const formData = new FormData();
+  formData.append('image', blob);
+
+  const response = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    throw new Error(data.error?.message || 'Error subiendo imagen');
+  }
+
+  return data.data.url; // URL pública de la imagen
+};
+
+// =====================================
+// COMPONENTE IMAGEUPLOADER
+// =====================================
 const ImageUploader = ({ value, onChange, className = '' }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const inputRef = React.useRef(null);
-
-  // NUEVA FUNCIÓN: Subir imagen a PicDB
-  const uploadToPicDB = async (file) => {
-    const formData = new FormData();
-    formData.append('image', file);
-
-    const response = await fetch('https://picdb.me/api/upload', {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Error ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.url; // Ejemplo: "https://picdb.me/i/abc123.jpg"
-  };
 
   const handleDrag = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -276,21 +285,67 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
   };
 
-  const handleFile = async (file) => {  // ← AHORA ES async
+  const handleFile = async (file) => {
     if (!file.type.match('image.*')) return;
 
-    setIsUploading(true);  // ← MUESTRA INDICADOR DE CARGA
+    setIsUploading(true);
 
-    try {
-      const imageUrl = await uploadToPicDB(file);  // ← SUbe a PicDB
-      onChange(imageUrl);  // ← Guarda la URL (no base64)
-      console.log('✅ Imagen subida a PicDB:', imageUrl);
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Error al subir la imagen. Intenta de nuevo.');
-    } finally {
-      setIsUploading(false);
-    }
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      const img = new Image();
+
+      img.onload = async () => {
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          const MAX_SIZE = 1920;
+
+          if (width > height && width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          } else if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const outputType = 'image/webp';
+          const quality = 0.85;
+
+          // Convertir canvas a blob
+          canvas.toBlob(async (blob) => {
+            try {
+              if (!blob) throw new Error('No se pudo crear el blob');
+
+              // Subir a ImgBB
+              const imageUrl = await uploadToImgBB(blob);
+
+              // Guardar la URL (no base64)
+              onChange(imageUrl);
+              console.log('✅ Imagen subida a ImgBB:', imageUrl);
+            } catch (error) {
+              console.error('Error subiendo a ImgBB:', error);
+              alert('Error al subir la imagen. Intenta de nuevo.');
+            } finally {
+              setIsUploading(false);
+            }
+          }, outputType, quality);
+        } catch (error) {
+          console.error('Error procesando imagen:', error);
+          setIsUploading(false);
+        }
+      };
+
+      img.src = e.target.result;
+    };
+
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -302,13 +357,12 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
       onDrop={handleDrop}
       onClick={() => !isUploading && inputRef.current?.click()}
     >
-      {/* INDICADOR DE CARGA MIENTRAS SUBE A PICDB */}
+      {/* Indicador de carga */}
       {isUploading && (
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-10 rounded-xl">
           <div className="text-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-            <p className="text-white text-xs font-bold">Subiendo a la nube...</p>
-            <p className="text-white/40 text-[10px] mt-1">PicDB 📸</p>
+            <p className="text-white text-xs font-bold">Subiendo a ImgBB...</p>
           </div>
         </div>
       )}
@@ -325,7 +379,7 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
       ) : (
         <div className="text-center p-4">
           <UploadCloud className={`mx-auto mb-2 transition-colors ${isDragging ? 'text-[var(--brand-primary)]' : 'text-white/30'}`} size={24} />
-          <p className="text-white/70 text-xs font-bold">Subir imagen</p>
+          <p className="text-white/70 text-xs font-bold">{isUploading ? 'Subiendo...' : 'Subir imagen'}</p>
           <p className="text-white/30 text-[10px] uppercase tracking-widest mt-1">PNG · JPG · WEBP</p>
         </div>
       )}
@@ -339,6 +393,7 @@ const ImageUploader = ({ value, onChange, className = '' }) => {
     </div>
   );
 };
+
 
 const Accordion = ({ title, badge, isOpen, onClick, children }) => (
   <div className="border-b border-[#2D1B4E] bg-[#110822]">
