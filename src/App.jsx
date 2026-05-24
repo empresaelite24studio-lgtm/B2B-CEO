@@ -181,7 +181,7 @@ function mergeProjectData(notionData, localData) {
   return result;
 }
 
-const MAX_SLIDES = 8;
+const MAX_SLIDES = 9;
 
 const defaultProjects = [
   {
@@ -727,6 +727,58 @@ const VisionSlide = ({ data }) => {
   );
 };
 
+const ExecutiveProcessSlide = () => {
+  return (
+    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#05010A] text-white px-8 md:px-20">
+      <div className="absolute inset-0 z-0 flex items-center justify-center opacity-30 pointer-events-none">
+        <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[200px] rounded-full mix-blend-screen opacity-10"></div>
+      </div>
+      
+      <div className="relative z-10 w-full max-w-[1000px] flex flex-col items-center text-center">
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8 }}
+          className="mb-12"
+        >
+          <span className="inline-block px-6 py-2 border border-[var(--brand-primary)] rounded-full text-[10px] text-[var(--brand-primary)] tracking-[0.3em] font-bold uppercase shadow-[0_0_20px_var(--brand-primary)] bg-[var(--brand-primary)]/10 mb-8">
+            El inicio de un proceso ejecutivo
+          </span>
+          
+          <h2 className="text-2xl md:text-4xl font-light leading-relaxed text-white/90 mb-8 ceo-text">
+            La propuesta visual que verá a continuación ha sido desarrollada íntegramente por nuestro equipo técnico en Elite 24 Studio.
+          </h2>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.8, delay: 0.2 }}
+          className="bg-white/5 border border-white/10 rounded-2xl p-8 md:p-12 backdrop-blur-md shadow-2xl relative overflow-hidden"
+        >
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--brand-primary)] to-transparent"></div>
+          <h3 className="text-xl md:text-2xl font-bold text-white mb-4 tracking-wide ceo-text">
+            No es IA; es <b>arquitectura proyectual.</b>
+          </h3>
+          <p className="text-white/70 text-sm md:text-base leading-relaxed mb-10">
+            Hemos construido estos modelos desde cero basándonos en el análisis estratégico de su marca. Son la simulación técnica de nuestra visión para su empresa, diseñada con criterios de flujo, rentabilidad y experiencia de usuario.
+          </p>
+          
+          <div className="bg-black/40 border border-white/5 rounded-xl p-6 text-left">
+            <h4 className="text-[11px] text-[var(--brand-primary)] font-bold tracking-[0.2em] uppercase mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[var(--brand-primary)] animate-pulse"></span>
+              El camino a la realidad
+            </h4>
+            <p className="text-white/60 text-xs md:text-sm leading-loose">
+              Esto es solo el punto de partida. Al igual que el documento de <span className="text-white font-bold tracking-wider">"PORTFOLIO ELITE 24 UNIVERSAL"</span> que hemos compartido con usted adjunto al correo en formato PDF, esta propuesta evoluciona en un proceso de co-creación. Junto a nosotros, definiremos los ajustes técnicos, normativos y constructivos necesarios para transformar esta visión en una obra ejecutada. Nuestro sistema de fases permite una flexibilidad financiera total para que caminemos juntos desde este primer concepto hasta la entrega final de su legado.
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
 const RendersSlide = ({ data, activeIndex, onIndexChange }) => {
   const { renders } = data;
 
@@ -1138,7 +1190,7 @@ export default function App() {
   const lastScrollTime = React.useRef(0);
 
   const handleNext = () => {
-    if (currentSlide === 4 && renderIndex < (projectData.renders?.length || 0) - 1) {
+    if (currentSlide === 5 && renderIndex < (projectData.renders?.length || 0) - 1) {
       setRenderIndex(prev => prev + 1);
     } else if (currentSlide < MAX_SLIDES - 1) {
       setCurrentSlide(prev => prev + 1);
@@ -1147,7 +1199,7 @@ export default function App() {
   };
 
   const handlePrev = () => {
-    if (currentSlide === 4 && renderIndex > 0) {
+    if (currentSlide === 5 && renderIndex > 0) {
       setRenderIndex(prev => prev - 1);
     } else if (currentSlide > 0) {
       setCurrentSlide(prev => prev - 1);
@@ -1618,10 +1670,26 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title={`Renders del proyecto (${projectData.renders?.length || 0})`} badge="4" isOpen={activeAccordion === 'renders'} onClick={() => {
+            <Accordion title="Proceso Ejecutivo" badge="4" isOpen={activeAccordion === 'executive'} onClick={() => {
+              const next = activeAccordion === 'executive' ? null : 'executive';
+              setActiveAccordion(next);
+              if (next) setCurrentSlide(4);
+            }}>
+              <div className="space-y-4">
+                <div className="p-4 bg-[var(--brand-primary)]/10 border border-[var(--brand-primary)]/30 rounded-lg">
+                  <p className="text-[10px] text-[var(--brand-primary)] uppercase tracking-widest font-bold mb-2">Transición visual</p>
+                  <p className="text-white/60 text-xs leading-relaxed">
+                    Esta es una diapositiva de transición fija que refuerza el mensaje de <b>arquitectura proyectual</b> y el sistema de co-creación con el cliente.
+                    <br/><br/>No requiere configuración de datos, está diseñada para generar impacto visual antes de presentar los renders.
+                  </p>
+                </div>
+              </div>
+            </Accordion>
+
+            <Accordion title={`Renders del proyecto (${projectData.renders?.length || 0})`} badge="5" isOpen={activeAccordion === 'renders'} onClick={() => {
               const next = activeAccordion === 'renders' ? null : 'renders';
               setActiveAccordion(next);
-              if (next) { setCurrentSlide(4); setRenderIndex(0); }
+              if (next) { setCurrentSlide(5); setRenderIndex(0); }
             }}>
               <div className="space-y-4">
                 {projectData.renders.map((render, index) => (
@@ -1642,20 +1710,20 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="Recordatorio" badge="5" isOpen={activeAccordion === 'reminder'} onClick={() => {
+            <Accordion title="Recordatorio" badge="6" isOpen={activeAccordion === 'reminder'} onClick={() => {
               const next = activeAccordion === 'reminder' ? null : 'reminder';
               setActiveAccordion(next);
-              if (next) setCurrentSlide(5);
+              if (next) setCurrentSlide(6);
             }}>
               <div className="space-y-4">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Párrafo (HTML)</label><textarea value={projectData.reminder.htmlText} onChange={e => handleUpdateData('reminder', 'htmlText', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white h-32 custom-scrollbar focus:border-[var(--brand-primary)] outline-none" /></div>
               </div>
             </Accordion>
 
-            <Accordion title={`Pilares (${projectData.pillars?.length || 0} cards)`} badge="6" isOpen={activeAccordion === 'pillars'} onClick={() => {
+            <Accordion title={`Pilares (${projectData.pillars?.length || 0} cards)`} badge="7" isOpen={activeAccordion === 'pillars'} onClick={() => {
               const next = activeAccordion === 'pillars' ? null : 'pillars';
               setActiveAccordion(next);
-              if (next) setCurrentSlide(6);
+              if (next) setCurrentSlide(7);
             }}>
               <div className="space-y-4">
                 {projectData.pillars.map((pillar, idx) => (
@@ -1668,10 +1736,10 @@ export default function App() {
               </div>
             </Accordion>
 
-            <Accordion title="CTA Final" badge="7" isOpen={activeAccordion === 'cta'} onClick={() => {
+            <Accordion title="CTA Final" badge="8" isOpen={activeAccordion === 'cta'} onClick={() => {
               const next = activeAccordion === 'cta' ? null : 'cta';
               setActiveAccordion(next);
-              if (next) setCurrentSlide(7);
+              if (next) setCurrentSlide(8);
             }}>
               <div className="space-y-6">
                 <div><label className="block text-[10px] uppercase tracking-widest text-white/50 mb-2 font-bold">Cita destacada</label><input type="text" value={projectData.ctaFinal.quote} onChange={e => handleUpdateData('ctaFinal', 'quote', e.target.value)} className="w-full bg-[#0A0514] border border-[#2D1B4E] rounded-md px-3 py-2 text-sm text-white focus:border-[var(--brand-primary)] outline-none" /></div>
@@ -1740,10 +1808,11 @@ export default function App() {
               {currentSlide === 1 && <ManifestoSlide data={projectData} />}
               {currentSlide === 2 && <CeoSlide data={projectData} />}
               {currentSlide === 3 && <VisionSlide data={projectData} />}
-              {currentSlide === 4 && <RendersSlide data={projectData} activeIndex={renderIndex} onIndexChange={setRenderIndex} />}
-              {currentSlide === 5 && <ReminderSlide data={projectData} />}
-              {currentSlide === 6 && <PillarsSlide data={projectData} />}
-              {currentSlide === 7 && <CtaSlide data={projectData} onRestart={() => { setCurrentSlide(0); setRenderIndex(0); }} />}
+              {currentSlide === 4 && <ExecutiveProcessSlide />}
+              {currentSlide === 5 && <RendersSlide data={projectData} activeIndex={renderIndex} onIndexChange={setRenderIndex} />}
+              {currentSlide === 6 && <ReminderSlide data={projectData} />}
+              {currentSlide === 7 && <PillarsSlide data={projectData} />}
+              {currentSlide === 8 && <CtaSlide data={projectData} onRestart={() => { setCurrentSlide(0); setRenderIndex(0); }} />}
             </motion.div>
           </AnimatePresence>
 
