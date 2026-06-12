@@ -1580,7 +1580,7 @@ export default function App() {
             <div><h1 className="text-white text-sm font-bold tracking-wider">ELITE 24 STUDIO</h1><p className="text-white/40 text-[10px] tracking-widest uppercase">B2B Builder</p></div>
           </div>
 
-          <div className="p-4 flex-1 flex flex-col">
+          <div className="p-4 flex-1 flex flex-col min-h-0">
             <button onClick={handleCreateProject} className="w-full bg-[#8A05BE] hover:bg-[#9B06D6] text-white rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-bold transition-colors shadow-[0_0_20px_#8A05BE]/30 mb-3">
               <Plus size={16} /> Nuevo proyecto
             </button>
