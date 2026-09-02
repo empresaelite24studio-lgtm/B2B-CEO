@@ -81,10 +81,12 @@ export default async function handler(req, res) {
         return res.status(200).json({ id, name, date, data });
       }
 
-      // List all projects (lightweight, returns stripped property data for fast loading)
+      // List all projects (only active ones, filtering out archived duplicates)
       const response = await notion.databases.query({ database_id: databaseId });
       
-      const projects = response.results.map(page => {
+      const activeResults = response.results.filter(page => !page.archived);
+
+      const projects = activeResults.map(page => {
         const properties = page.properties;
         const id = properties.ProjectID?.rich_text[0]?.plain_text || page.id;
         const name = properties.Name?.title[0]?.plain_text || 'Sin nombre';

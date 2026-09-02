@@ -58,7 +58,8 @@ app.get('/api/projects', async (req, res) => {
     }
 
     const response = await notion.databases.query({ database_id: databaseId });
-    const projects = response.results.map(page => {
+    const activeResults = response.results.filter(page => !page.archived);
+    const projects = activeResults.map(page => {
       const properties = page.properties;
       const id = properties.ProjectID?.rich_text[0]?.plain_text || page.id;
       const name = properties.Name?.title[0]?.plain_text || 'Sin nombre';
