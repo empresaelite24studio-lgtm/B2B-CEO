@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n \"API,VITE\" -c \"cyan,magenta\" \"node local-api.cjs\" \"vite\"",
+    "dev:vite": "vite",
+    "dev:api": "node local-api.cjs",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"

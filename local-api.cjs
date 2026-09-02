@@ -92,9 +92,9 @@ app.post('/api/projects', async (req, res) => {
   const safeDate = date || '';
   const cleanData = stripBase64Images(data || {});
   const jsonString = JSON.stringify(cleanData);
-  const chunks = [];
+  const propertyChunks = [];
   for (let i = 0; i < jsonString.length; i += 2000) {
-    chunks.push({ type: 'text', text: { content: jsonString.substring(i, i + 2000) } });
+    propertyChunks.push({ type: 'text', text: { content: jsonString.substring(i, i + 2000) } });
   }
 
   try {
@@ -103,43 +103,67 @@ app.post('/api/projects', async (req, res) => {
       filter: { property: 'ProjectID', rich_text: { equals: safeId } }
     });
 
+    let pageId;
     if (existing.results.length > 0) {
-      for (const page of existing.results) {
-        await notion.pages.update({ page_id: page.id, archived: true });
-      }
-    }
+      const targetPage = existing.results.find(p => !p.archived) || existing.results[0];
+      pageId = targetPage.id;
 
-    const newPage = await notion.pages.create({
-      parent: { database_id: databaseId },
-      properties: {
-        Name: { title: [{ text: { content: safeName } }] },
-        ProjectID: { rich_text: [{ text: { content: safeId } }] },
-        Date: { rich_text: [{ text: { content: safeDate } }] },
-        JSONData: { rich_text: chunks }
-      }
-    });
-
-    const fullJsonString = JSON.stringify(data || {});
-    const blockChunks = [];
-    for (let i = 0; i < fullJsonString.length; i += 2000) {
-      blockChunks.push({
-        object: 'block',
-        type: 'paragraph',
-        paragraph: { rich_text: [{ type: 'text', text: { content: fullJsonString.substring(i, i + 2000) } }] }
+      await notion.pages.update({
+        page_id: pageId,
+        archived: false,
+        properties: {
+          Name: { title: [{ text: { content: safeName } }] },
+          ProjectID: { rich_text: [{ text: { content: safeId } }] },
+          Date: { rich_text: [{ text: { content: safeDate } }] },
+          JSONData: { rich_text: propertyChunks }
+        }
       });
-    }
 
-    for (let i = 0; i < blockChunks.length; i += 100) {
-      await notion.blocks.children.append({
-        block_id: newPage.id,
-        children: blockChunks.slice(i, i + 100)
+      for (const extraPage of existing.results) {
+        if (extraPage.id !== pageId && !extraPage.archived) {
+          await notion.pages.update({ page_id: extraPage.id, archived: true }).catch(() => {});
+        }
+      }
+    } else {
+      const newPage = await notion.pages.create({
+        parent: { database_id: databaseId },
+        properties: {
+          Name: { title: [{ text: { content: safeName } }] },
+          ProjectID: { rich_text: [{ text: { content: safeId } }] },
+          Date: { rich_text: [{ text: { content: safeDate } }] },
+          JSONData: { rich_text: propertyChunks }
+        }
       });
+      pageId = newPage.id;
     }
 
-    console.log('✅ Proyecto guardado en Notion');
+    try {
+      const fullJsonString = JSON.stringify(data || {});
+      const blockChunks = [];
+      for (let i = 0; i < fullJsonString.length; i += 2000) {
+        blockChunks.push({
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [{ type: 'text', text: { content: fullJsonString.substring(i, i + 2000) } }] }
+        });
+      }
+
+      if (existing.results.length === 0) {
+        for (let i = 0; i < blockChunks.length; i += 100) {
+          await notion.blocks.children.append({
+            block_id: pageId,
+            children: blockChunks.slice(i, i + 100)
+          });
+        }
+      }
+    } catch (blockErr) {
+      console.warn('Advertencia al sincronizar bloques secundarios en Notion:', blockErr.message);
+    }
+
+    console.log(`✅ Proyecto "${safeName}" (${safeId}) guardado en Notion`);
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Error guardando en Notion:', error);
     res.status(500).json({ error: error.message });
   }
 });

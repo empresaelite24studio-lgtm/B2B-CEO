@@ -56,18 +56,26 @@ const loadFromDB = async (key) => {
   });
 };
 
+let isStorageSaving = false;
+
 const StorageManager = {
   save: async (projects, activeId) => {
-    try {
-      // Prioritize active project if provided
-      const sortedProjects = [...projects].sort((a, b) => {
-        if (a.id === activeId) return -1;
-        if (b.id === activeId) return 1;
-        return 0;
-      });
+    // Guardar en localStorage de inmediato para persistencia local instantánea
+    try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch (e) { }
 
-      // Save each project individually to Notion in parallel
-      const savePromises = sortedProjects.map(async (proj) => {
+    if (isStorageSaving) {
+      console.log("Guardado en Notion ya en curso, omitiendo llamada duplicada.");
+      return;
+    }
+    isStorageSaving = true;
+
+    try {
+      // Si se proporciona activeId, guardar solo el proyecto activo a Notion para evitar ráfagas de peticiones
+      const targetProjects = activeId 
+        ? projects.filter(p => p.id === activeId)
+        : (projects.length > 0 ? [projects[0]] : []);
+
+      const savePromises = targetProjects.map(async (proj) => {
         try {
           const res = await fetch('/api/projects', {
             method: 'POST',
@@ -91,12 +99,11 @@ const StorageManager = {
       });
 
       await Promise.all(savePromises);
-
-      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch (e) { }
     } catch (e) {
-      console.error("Error saving projects:", e);
-      try { localStorage.setItem('b2b-projects-v2', JSON.stringify(projects)); } catch (err) { }
+      console.error("Error saving projects to Notion:", e);
       throw e;
+    } finally {
+      isStorageSaving = false;
     }
   },
   load: async () => {
@@ -733,7 +740,7 @@ const ExecutiveProcessSlide = () => {
       <div className="absolute inset-0 z-0 flex items-center justify-center opacity-30 pointer-events-none">
         <div className="w-[100vw] h-[100vh] bg-[var(--brand-primary)] blur-[200px] rounded-full mix-blend-screen opacity-10"></div>
       </div>
-      
+
       <div className="relative z-10 w-full max-w-[1000px] flex flex-col items-center text-center">
         <motion.div
           initial={{ opacity: 0, y: 30 }}
@@ -744,7 +751,7 @@ const ExecutiveProcessSlide = () => {
           <span className="inline-block px-6 py-2 border border-[var(--brand-primary)] rounded-full text-[10px] text-[var(--brand-primary)] tracking-[0.3em] font-bold uppercase shadow-[0_0_20px_var(--brand-primary)] bg-[var(--brand-primary)]/10 mb-8">
             El inicio de un proceso ejecutivo
           </span>
-          
+
           <h2 className="text-2xl md:text-4xl font-light leading-relaxed text-white/90 mb-8 ceo-text">
             La propuesta visual que verá a continuación ha sido desarrollada íntegramente por nuestro equipo técnico en Elite 24 Studio.
           </h2>
@@ -763,7 +770,7 @@ const ExecutiveProcessSlide = () => {
           <p className="text-white/70 text-sm md:text-base leading-relaxed mb-10">
             Hemos construido estos modelos desde cero basándonos en el análisis estratégico de su marca. Son la simulación técnica de nuestra visión para su empresa, diseñada con criterios de flujo, rentabilidad y experiencia de usuario.
           </p>
-          
+
           <div className="bg-black/40 border border-white/5 rounded-xl p-6 text-left">
             <h4 className="text-[11px] text-[var(--brand-primary)] font-bold tracking-[0.2em] uppercase mb-4 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[var(--brand-primary)] animate-pulse"></span>
@@ -1507,38 +1514,47 @@ export default function App() {
   const handleRenameProject = (id, newName) => {
     setProjects(projects.map(p => p.id === id ? { ...p, name: newName } : p));
   };
-  const handleShareLink = async () => {
-    // Auto-guardar antes de compartir para asegurar que los datos estén en la nube
-    if (!isPublicView) {
-      await handleSaveChanges();
-    }
-
-    // Format: /c/nombre-del-proyecto--ID
-    // Slug gives readability & trust, ID ensures reliable matching
+  const handleShareLink = () => {
+    // Generate URL immediately while user gesture is active
     const slug = slugify(activeProject.name);
     const url = `${window.location.origin}/c/${slug}--${activeProject.id}`;
 
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(url.toString()).then(() => {
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 2000);
-      });
-    } else {
-      // Fallback para navegadores antiguos
+    const triggerCopiedFeedback = () => {
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    };
+
+    const fallbackCopy = (textToCopy) => {
       const textArea = document.createElement("textarea");
-      textArea.value = url.toString();
+      textArea.value = textToCopy;
       textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
       document.body.appendChild(textArea);
       textArea.focus();
       textArea.select();
       try {
-        document.execCommand('copy');
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 2000);
+        const successful = document.execCommand('copy');
+        if (successful) triggerCopiedFeedback();
       } catch (err) {
         console.error('Fallback copy failed', err);
       }
       document.body.removeChild(textArea);
+    };
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(url).then(() => {
+        triggerCopiedFeedback();
+      }).catch(err => {
+        console.warn('Clipboard API error, trying fallback:', err);
+        fallbackCopy(url);
+      });
+    } else {
+      fallbackCopy(url);
+    }
+
+    // Auto-guardar en segundo plano para no perder el foco ni retrasar la copia
+    if (!isPublicView) {
+      handleSaveChanges().catch(e => console.warn('Auto-save before share failed:', e));
     }
   };
 
@@ -1680,7 +1696,7 @@ export default function App() {
                   <p className="text-[10px] text-[var(--brand-primary)] uppercase tracking-widest font-bold mb-2">Transición visual</p>
                   <p className="text-white/60 text-xs leading-relaxed">
                     Esta es una diapositiva de transición fija que refuerza el mensaje de <b>arquitectura proyectual</b> y el sistema de co-creación con el cliente.
-                    <br/><br/>No requiere configuración de datos, está diseñada para generar impacto visual antes de presentar los renders.
+                    <br /><br />No requiere configuración de datos, está diseñada para generar impacto visual antes de presentar los renders.
                   </p>
                 </div>
               </div>
@@ -1755,8 +1771,8 @@ export default function App() {
                     saveStatus === 'error' ? 'bg-red-500 text-white' :
                       'bg-[var(--brand-primary)] text-white shadow-[0_0_20px_var(--brand-primary)] hover:scale-[1.02]'}`}
               >
-                {saveStatus === 'saved' ? <CheckCircle size={18} /> : saveStatus === 'error' ? 'Error de Bóveda' : <Save size={18} className="group-hover:-translate-y-1 transition-transform" />}
-                {saveStatus === 'saving' ? 'Guardando...' : saveStatus === 'saved' ? '¡Cambios Guardados!' : saveStatus === 'error' ? 'Vuelve a intentar' : 'Guardar Proyecto'}
+                {saveStatus === 'saved' ? <CheckCircle size={18} /> : saveStatus === 'error' ? <span>Error de Bóveda</span> : <Save size={18} className="group-hover:-translate-y-1 transition-transform" />}
+                <span>{saveStatus === 'saving' ? 'Guardando...' : saveStatus === 'saved' ? '¡Cambios Guardados!' : saveStatus === 'error' ? 'Vuelve a intentar' : 'Guardar Proyecto'}</span>
                 {saveStatus === 'saving' && <div className="absolute inset-0 bg-white/20 w-full animate-pulse"></div>}
               </button>
               <p className="text-center text-[9px] text-white/30 tracking-widest uppercase mt-4">Almacenamiento Ilimitado (IndexedDB)</p>
@@ -1781,13 +1797,16 @@ export default function App() {
             ) : (
               <>
                 <button onClick={handleShareLink} className={`bg-white/10 hover:bg-[var(--brand-primary)] text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-all shadow-lg ${isCopied ? 'bg-green-500 hover:bg-green-600' : ''}`}>
-                  {isCopied ? <CheckCircle size={14} /> : <Share2 size={14} />} {isCopied ? '¡Link copiado!' : 'Compartir'}
+                  {isCopied ? <CheckCircle size={14} /> : <Share2 size={14} />}
+                  <span>{isCopied ? '¡Link copiado!' : 'Compartir'}</span>
                 </button>
                 <button onClick={() => setIsFullscreen(!isFullscreen)} className="bg-white/10 hover:bg-white/20 text-white backdrop-blur-md rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg">
-                  {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />} {isFullscreen ? 'Salir (ESC)' : 'Pantalla completa'}
+                  {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
+                  <span>{isFullscreen ? 'Salir (ESC)' : 'Pantalla completa'}</span>
                 </button>
                 <button onClick={handleExportHtml} className="bg-[#E7B865] hover:bg-[#D4A352] text-black rounded-lg px-4 py-2 flex items-center justify-center gap-2 text-[10px] font-bold tracking-widest uppercase transition-colors shadow-lg shadow-[#E7B865]/20">
-                  <Download size={14} /> Exportar HTML
+                  <Download size={14} />
+                  <span>Exportar HTML</span>
                 </button>
               </>
             )}
