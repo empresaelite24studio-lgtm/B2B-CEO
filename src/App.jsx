@@ -276,45 +276,35 @@ const uploadToImgBB = async (blob) => {
 // COMPONENTE IMAGEUPLOADER
 // =====================================
 // =====================================
-// OPTIMIZADOR DE URLs DE IMÁGENES EXTERNAS
+// COMPONENTE DE IMAGEN OPTIMIZADA (LAZY LOAD + FADE IN + AUTO RETRY)
 // =====================================
-const optimizeImageUrl = (url, width = 800) => {
-  if (!url || typeof url !== 'string') return url;
-  // Optimiza URLs de Unsplash: fuerza WebP, reduce tamaño, máxima compresión
-  if (url.includes('unsplash.com')) {
-    const base = url.split('?')[0];
-    return `${base}?auto=format&fit=crop&w=${width}&q=72&fm=webp`;
-  }
-  // ImgBB: devuelve la URL tal cual (ya es WebP optimizado post-upload)
-  return url;
-};
-
-// Preloads una imagen usando <link rel="prefetch"> para máxima prioridad del browser
-const preloadImageUrl = (url) => {
-  if (!url || typeof url !== 'string' || !url.startsWith('http')) return;
-  const optimized = optimizeImageUrl(url);
-  const existing = document.querySelector(`link[rel="prefetch"][href="${optimized}"]`);
-  if (existing) return; // Ya está en prefetch, no duplicar
-  const link = document.createElement('link');
-  link.rel = 'prefetch';
-  link.as = 'image';
-  link.href = optimized;
-  document.head.appendChild(link);
-};
-
-// =====================================
-// COMPONENTE DE IMAGEN OPTIMIZADA (LAZY LOAD + FADE IN + URL OPTIMIZATION)
-// =====================================
-const OptimizedImage = ({ src, alt, className = '', priority = false, style, width = 800, ...props }) => {
+const OptimizedImage = ({ src, alt, className = '', priority = false, style, ...props }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
-
-  const optimizedSrc = optimizeImageUrl(src, priority ? 1200 : width);
+  const [retrySrc, setRetrySrc] = useState(null);
+  const retryCount = React.useRef(0);
+  const MAX_RETRIES = 2;
 
   useEffect(() => {
     setIsLoaded(false);
     setHasError(false);
+    setRetrySrc(null);
+    retryCount.current = 0;
   }, [src]);
+
+  const handleError = () => {
+    if (retryCount.current < MAX_RETRIES) {
+      retryCount.current += 1;
+      // Fuerza un re-fetch añadiendo timestamp para romper caché corrupta
+      const delay = retryCount.current * 1500;
+      setTimeout(() => {
+        const sep = src.includes('?') ? '&' : '?';
+        setRetrySrc(`${src}${sep}_r=${retryCount.current}`);
+      }, delay);
+    } else {
+      setHasError(true);
+    }
+  };
 
   if (!src || hasError) return null;
 
@@ -326,13 +316,12 @@ const OptimizedImage = ({ src, alt, className = '', priority = false, style, wid
         </div>
       )}
       <img
-        src={optimizedSrc}
+        src={retrySrc || src}
         alt={alt || ''}
         loading={priority ? 'eager' : 'lazy'}
-        decoding={priority ? 'sync' : 'async'}
-        fetchPriority={priority ? 'high' : 'auto'}
+        decoding="async"
         onLoad={() => setIsLoaded(true)}
-        onError={() => setHasError(true)}
+        onError={handleError}
         className={`w-full h-full object-cover transition-opacity duration-500 ease-in-out ${isLoaded ? 'opacity-100' : 'opacity-0'}`}
         {...props}
       />
@@ -1161,41 +1150,29 @@ export default function App() {
   const activeProject = projects.find(p => p.id === activeProjectId) || projects[0] || defaultProjects[0];
   const projectData = mergeWithDefaults(activeProject?.data, defaultProjects[0].data);
 
-  // ── Precarga anticipada: imágenes del slide ACTUAL + SIGUIENTE ──
-  // Se ejecuta cada vez que cambia el slide para estar un paso adelante
+  // ── Precarga conservadora: solo la primera imagen del slide siguiente ──
+  // Espera 1.5s para no competir con la carga del slide actual
   useEffect(() => {
     if (!projectData) return;
-
-    // Mapa: índice de slide → URLs de imágenes que usa ese slide
-    const slideImages = [
-      // Slide 0 (Hero): logo de marca
-      [projectData.brand?.logoUrl, projectData.studio?.logoUrl].filter(Boolean),
-      // Slide 1 (Manifesto): sin imágenes pesadas
-      [],
-      // Slide 2 (CEO): foto CEO
-      [projectData.ceoInvitation?.photoUrl].filter(Boolean),
-      // Slide 3 (Vision): tarjetas de imagen
-      (projectData.vision?.cards || []).map(c => c.imgUrl).filter(Boolean),
-      // Slide 4 (ExecutiveProcess): sin imágenes
-      [],
-      // Slide 5 (Renders): todas las imágenes de renders
-      (projectData.renders || []).map(r => r.imgUrl).filter(Boolean),
-      // Slide 6 (Reminder): sin imágenes
-      [],
-      // Slide 7 (Pillars): sin imágenes
-      [],
-      // Slide 8 (CTA): sin imágenes
-      [],
+    const NEXT = currentSlide + 1;
+    const nextSlideImages = [
+      [projectData.brand?.logoUrl].filter(Boolean),          // 0 Hero
+      [],                                                      // 1 Manifesto
+      [projectData.ceoInvitation?.photoUrl].filter(Boolean), // 2 CEO
+      [(projectData.vision?.cards || [])[0]?.imgUrl].filter(Boolean), // 3 Vision (solo 1ra card)
+      [],                                                      // 4 Executive
+      [projectData.renders?.[0]?.imgUrl].filter(Boolean),    // 5 Renders (solo 1er render)
+      [], [], [],
     ];
+    const nextUrl = nextSlideImages[NEXT]?.[0];
+    if (!nextUrl || typeof nextUrl !== 'string' || !nextUrl.startsWith('http')) return;
 
-    // Precarga el slide actual y el siguiente con máxima prioridad
-    const toPrefetch = new Set([
-      ...(slideImages[currentSlide] || []),
-      ...(slideImages[currentSlide + 1] || []),
-    ]);
-
-    toPrefetch.forEach(url => preloadImageUrl(url));
-  }, [projectData, currentSlide]);
+    const timer = setTimeout(() => {
+      const img = new Image();
+      img.src = nextUrl;
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [currentSlide, projectData]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
